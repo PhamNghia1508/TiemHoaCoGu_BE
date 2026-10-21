@@ -1,0 +1,84 @@
+﻿2. Chi tiết từng bảng và ý nghĩa từng trường
+Nhóm 1: Khách hàng & Địa chỉ (CUSTOMER, ADDRESS)
+* CUSTOMER: Quản lý tài khoản và khách vãng lai. 
+	* CustomerId: Khóa chính định danh.
+	* FullName, PhoneNumber, Email: Thông tin liên hệ. PhoneNumber đánh chỉ mục để tra cứu nhanh vé workshop hoặc đơn hàng.
+	* PasswordHash: Mật khẩu băm (nếu là tài khoản quản trị hoặc khách đăng ký).
+	* Role: Phân quyền (Admin, Staff, Customer).
+	* IsGuest: true nếu khách mua nhanh/đặt workshop không cần tạo tài khoản (theo đúng yêu cầu không bắt đăng nhập).
+* ADDRESS: Sổ địa chỉ giao hàng của khách. 
+	* ReceiverName, ReceiverPhone: Người nhận có thể khác người đặt.
+	* DetailAddress, Ward, District, Province: Chia cấp địa giới hành chính để tích hợp tính phí vận chuyển tự động.
+	* IsDefault: Địa chỉ mặc định.
+Nhóm 2: Sản phẩm, Danh mục & Kho (PRODUCT, CATEGORY, INVENTORY, PRODUCT_IMAGE)
+* CATEGORY: Phân loại (bo - Bó hoa, lo - Lọ/nến, diy - Set DIY).
+* PRODUCT: Sản phẩm hoa sáp. 
+	* IsCustomizable: true cho phép khách yêu cầu custom (màu hoa, số cành, giấy gói).
+	* IsPreOrder: true đối với các mẫu phải đặt trước (không có sẵn hàng giao ngay).
+	* Price: Giá bán niêm yết hiện tại.
+	* OriginalPrice: Giá gốc (hiển thị gạch ngang khi có khuyến mại).
+	* Section: Vị trí hiển thị trên web (arrivals, discover).
+* PRODUCT_IMAGE: Bộ sưu tập ảnh sản phẩm, hỗ trợ sắp xếp theo DisplayOrder.
+* INVENTORY: Quản lý tồn kho. 
+	* QuantityAvailable: Số lượng thực tế trong kho sẵn sàng bán.
+	* QuantityReserved: Số lượng đang được giữ trong các đơn hàng chờ thanh toán.
+Nhóm 3: Giỏ hàng, Voucher & Đơn hàng (ORDER, ORDER_ITEM, VOUCHER, DELIVERY)
+* SHOPPING_CART_ITEM: Giỏ hàng lưu trên server khi khách đăng nhập. 
+	* CustomNote: Ghi chú riêng cho sản phẩm custom (VD: "Phối thêm hoa cúc trắng").
+	* ReferenceImageUrl: Link ảnh mẫu khách tải lên khi chat/yêu cầu làm theo mẫu.
+* VOUCHER: Mã giảm giá. 
+	* DiscountType: Percentage (% chiết khấu) hoặc FixedAmount (trừ thẳng tiền).
+	* MinOrderAmount, MaxDiscountAmount: Điều kiện áp dụng.
+	* UsageLimit, UsedCount: Giới hạn số lượt dùng.
+* ORDER: Đơn đặt mua hoa. 
+	* OrderCode: Mã đơn hiển thị cho khách (VD: ORD-20261021-001).
+	* SubTotal: Tổng tiền hàng gốc.
+	* DiscountAmount: Tiền được giảm từ Voucher.
+	* ShippingFee: Phí ship tính toán theo chính sách giao hàng.
+	* TotalAmount: Số tiền cuối cùng phải trả (SubTotal - DiscountAmount + ShippingFee).
+	* OrderStatus: Trạng thái đơn (Draft, Confirmed, Processing, Delivering, Completed, Cancelled).
+	* PaymentStatus: Trạng thái thanh toán (Unpaid, PartiallyPaid, Paid, Refunded).
+* ORDER_ITEM: Chi tiết sản phẩm trong đơn. 
+	* UnitPrice: Bắt buộc lưu giá tại thời điểm đặt để tránh việc admin sửa giá sản phẩm ở bảng PRODUCT làm sai lệch hóa đơn cũ.
+	* FinalPrice: Hỗ trợ yêu cầu: "Thiết kế theo order item nữa nghĩ tới trường hợp chỉnh sửa giá tiền món hàng" (Admin có thể thương lượng và sửa giá riêng cho món custom).
+	* AdminPriceNote: Lý do nhân viên điều chỉnh giá (VD: "Khách đổi sang giấy gói Hàn Quốc cao cấp").
+	* ReferenceImageUrl: Ảnh mẫu hoa khách gửi đính kèm.
+* DELIVERY & DELIVERY_ITEM: Hỗ trợ yêu cầu: "Giao hàng nhiều lần delivery, thông tin policy tính tiền". 
+	* Một đơn hàng lớn gồm nhiều món (hoặc có món đặt trước giao sau) có thể được tách làm nhiều chuyến giao (1 Order -> n Delivery).
+	* ShipperUnit, TrackingNumber: Đơn vị vận chuyển (AhaMove, Grab, GHTK) và mã vận đơn.
+	* ShippedQuantity: Số lượng thực xuất của từng món trong chuyến giao đó.
+Nhóm 4: Workshop, Ca học, Diễn giả & Đặt chỗ (WORKSHOP, WORKSHOP_SESSION, INSTRUCTOR, WORKSHOP_BOOKING)
+* INSTRUCTOR: Diễn giả / Nghệ nhân hướng dẫn workshop. 
+	* FullName, Bio, AvatarUrl: Hiển thị thông tin diễn giả lên web giới thiệu workshop.
+* WORKSHOP: Khóa học hoa sáp (Cơ bản, Nâng cao, Workshop gia đình...). 
+	* BasePrice: Giá vé niêm yết / người.
+	* GoalsJson, IncludesJson: Lưu mảng các kỹ năng đạt được và quyền lợi đi kèm.
+* WORKSHOP_SESSION: Ca học cụ thể. 
+	* SessionDate, StartTime, EndTime: Ngày và khung giờ (VD: 25/10/2026 14:00 - 16:30).
+	* Capacity: Sức chứa tối đa (VD: 8 người).
+	* BookedSlots: Số chỗ đã có người giữ hoặc thanh toán (để tự động khóa khi hết chỗ).
+	* SessionStatus: Open, Full, Ongoing, Closed, Cancelled.
+* WORKSHOP_BOOKING: Đặt vé workshop (Trọng tâm nghiệp vụ). 
+	* BookingCode: Mã đặt vé tra cứu (VD: WS-883921).
+	* TicketCount: Số lượng người tham gia.
+	* TotalAmount: Tổng tiền vé.
+	* DepositAmount (30% - 50%): Tiền cọc tối thiểu để xác nhận vé.
+	* RemainingAmount: Tiền còn lại phải trả trước buổi học 24h.
+	* BookingStatus: Đi đủ 6 trạng thái nghiệp vụ chuẩn: 
+		* pending: Đang giữ chỗ, chờ thanh toán cọc.
+		* expired: Quá 10 phút không thanh toán cọc, tự động nhả chỗ.
+		* confirmed: Đã cọc / thanh toán đủ.
+		* attended: Đã tham gia (check-in thành công).
+		* no_show: Không đến tham gia (mất cọc).
+		* cancelled: Khách chủ động hủy lịch.
+	* HoldExpiresAt: Thời điểm hết hạn giữ chỗ (10 phút kể từ lúc bấm đặt form).
+	* CheckedInAt: Ghi nhận thời gian khách đến check-in tại Studio.
+Nhóm 5: Thanh toán & Hoàn tiền (PAYMENT, REFUND)
+* PAYMENT: Lưu vết từng giao dịch tiền tệ. 
+	* Có thể dùng cho cả ORDER lẫn WORKSHOP_BOOKING.
+	* PaymentType: Deposit (Tiền cọc), Full (Thanh toán hết), Remaining (Thanh toán số tiền còn lại).
+	* PaymentMethod: VNPay, BankingQR, Cash, Momo.
+* REFUND: Ghi nhận hoàn tiền theo chính sách hủy workshop / hủy đơn hàng: 
+	* RefundAmount: Số tiền hoàn trả cho khách (sau khi trừ phí phạt theo quy định hủy vé).
+	* RefundReason: Lý do hủy.
+	* ApprovedBy: Người duyệt hoàn tiền.
