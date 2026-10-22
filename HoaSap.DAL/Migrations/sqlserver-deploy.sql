@@ -832,3 +832,37 @@ GO
 COMMIT;
 GO
 
+BEGIN TRANSACTION;
+GO
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20261022193130_AddIdentityCmsDefaults'
+)
+BEGIN
+    ALTER TABLE [Customers] ADD [IsActive] bit NOT NULL DEFAULT CAST(1 AS bit);
+END;
+GO
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20261022193130_AddIdentityCmsDefaults'
+)
+BEGIN
+    ALTER TABLE [Categories] ADD [ImageUrl] nvarchar(max) NOT NULL DEFAULT N'';
+END;
+GO
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20261022193130_AddIdentityCmsDefaults'
+)
+BEGIN
+    INSERT INTO [__EFMigrationsHistory] ([MigrationId], [ProductVersion])
+    VALUES (N'20261022193130_AddIdentityCmsDefaults', N'8.0.22');
+END;
+GO
+
+COMMIT;
+GO
+

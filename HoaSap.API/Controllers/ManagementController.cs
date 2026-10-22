@@ -5,30 +5,15 @@ using HoaSap.Domain.Entities;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using System.Text.RegularExpressions;
 
 namespace HoaSap.API.Controllers;
 
 [ApiController]
-[Authorize(Roles = "Admin,Staff")]
+[Authorize(Roles = "Admin")]
 [Route("api/management")]
 public sealed class ManagementController(HoaSapDbContext db) : ControllerBase
 {
-    [HttpGet("categories")]
-    public Task<List<Category>> Categories(CancellationToken ct) => db.Categories.AsNoTracking().ToListAsync(ct);
-
-    [HttpPost("categories")]
-    public async Task<Category> Category(AdminCategoryRequest request, CancellationToken ct)
-    {
-        var code = request.Code.Trim();
-        var name = request.Name.Trim();
-        if (code.Length == 0 || name.Length == 0) throw new BusinessException(400, "Category code/name is required");
-        if (await db.Categories.AnyAsync(x => x.Code == code, ct)) throw new BusinessException(409, "Category code exists");
-        var category = new Category { Id = Guid.NewGuid(), Code = code, Name = name, Description = request.Description?.Trim() ?? "" };
-        db.Categories.Add(category);
-        await db.SaveChangesAsync(ct);
-        return category;
-    }
-
     [HttpPost("products")]
     public async Task<Product> Product(AdminProductRequest request, CancellationToken ct)
     {
@@ -36,6 +21,7 @@ public sealed class ManagementController(HoaSapDbContext db) : ControllerBase
         if (decimal.Round(request.Price, 2) != request.Price || (request.OriginalPrice is { } original && decimal.Round(original, 2) != original))
             throw new BusinessException(400, "Price supports at most two decimal places");
         if (!await db.Categories.AnyAsync(x => x.Id == request.CategoryId, ct)) throw new BusinessException(404, "Category not found");
+        ValidateMediaUrl(request.ThumbnailUrl, "Thumbnail URL");
         var code = request.Code.Trim();
         var name = request.Name.Trim();
         if (code.Length == 0 || name.Length == 0) throw new BusinessException(400, "Product code/name is required");
@@ -110,6 +96,15 @@ public sealed class ManagementController(HoaSapDbContext db) : ControllerBase
         await db.SaveChangesAsync(ct);
         return voucher;
     }
+
+    private static void ValidateMediaUrl(string? value, string field)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return;
+        var candidate = value.Trim();
+        if (Regex.IsMatch(candidate, @"^/api/media/[0-9a-fA-F]{32}\.(png|jpg|webp)$", RegexOptions.CultureInvariant)) return;
+        if (!Uri.TryCreate(candidate, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https") || uri.UserInfo.Length > 0 || candidate.Any(char.IsWhiteSpace))
+            throw new BusinessException(400, $"{field} must be an HTTP(S) URL or managed media URL");
+    }
 }
 
 public sealed class AdminCategoryRequest
@@ -117,6 +112,7 @@ public sealed class AdminCategoryRequest
     [Required, StringLength(40)] public string Code { get; set; } = "";
     [Required, StringLength(200)] public string Name { get; set; } = "";
     [StringLength(1000)] public string? Description { get; set; }
+    [StringLength(2000)] public string? ImageUrl { get; set; }
 }
 
 public sealed class AdminProductRequest
@@ -126,7 +122,7 @@ public sealed class AdminProductRequest
     [Required, StringLength(300)] public string Name { get; set; } = "";
     [Range(0, 1000000000)] public decimal Price { get; set; }
     [Range(0, 1000000000)] public decimal? OriginalPrice { get; set; }
-    [Url, StringLength(2000)] public string? ThumbnailUrl { get; set; }
+    [StringLength(2000)] public string? ThumbnailUrl { get; set; }
     [StringLength(4000)] public string? Description { get; set; }
     [StringLength(100)] public string? Badge { get; set; }
     [StringLength(100)] public string? Section { get; set; }

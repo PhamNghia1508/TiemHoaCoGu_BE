@@ -51,3 +51,4 @@ $RECYCLE.BIN/
 **/appsettings.Local.json
 TestResults/
 artifacts/
+**/App_Data/media/

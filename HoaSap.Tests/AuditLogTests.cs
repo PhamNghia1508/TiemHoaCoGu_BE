@@ -62,10 +62,11 @@ public sealed class AuditLogTests
         await using var transaction = await db.Database.BeginTransactionAsync();
         db.Products.Add(new Product { CategoryId = category.Id, Code = "ROLLBACK-PRODUCT", Name = "Rollback", Price = 10m });
         await db.SaveChangesAsync();
-        Assert.Equal(1, await db.AuditLogs.CountAsync());
+        Assert.Equal(2, await db.AuditLogs.CountAsync());
         await transaction.RollbackAsync();
         Assert.Equal(0, await db.Products.CountAsync());
-        Assert.Equal(0, await db.AuditLogs.CountAsync());
+        Assert.Equal(0, await db.AuditLogs.CountAsync(x => x.EntityType == "Product"));
+        Assert.Equal(1, await db.AuditLogs.CountAsync(x => x.EntityType == "Category"));
     }
 
     [Fact]

@@ -74,7 +74,7 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJw
         {
             if (!Guid.TryParse(context.Principal?.FindFirstValue(ClaimTypes.NameIdentifier), out var id)) { context.Fail("Invalid subject"); return; }
             var db = context.HttpContext.RequestServices.GetRequiredService<HoaSapDbContext>();
-            var user = await db.Customers.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id && !x.IsGuest);
+            var user = await db.Customers.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id && !x.IsGuest && x.IsActive);
             var presentedStamp = context.Principal?.FindFirstValue(SecurityStampService.ClaimType);
             var key = builder.Configuration["Jwt:Key"]!;
             if (user is null || user.Role != context.Principal?.FindFirstValue(ClaimTypes.Role) ||
@@ -114,11 +114,22 @@ app.UseMiddleware<RequestDiagnosticsMiddleware>();
 app.UseMiddleware<ExceptionMiddleware>();
 if (isDev) { app.UseSwagger(); app.UseSwaggerUI(); }
 else { app.UseHsts(); app.UseHttpsRedirection(); }
+app.Use(async (context, next) =>
+{
+    if (context.Request.Path.StartsWithSegments("/admin"))
+    {
+        context.Response.Headers.ContentSecurityPolicy = "default-src 'self'; img-src 'self' http: https: data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; object-src 'none'";
+        context.Response.Headers.XContentTypeOptions = "nosniff";
+    }
+    await next();
+});
+app.UseStaticFiles();
 app.UseCors();
 app.UseRateLimiter();
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
+app.MapGet("/admin", () => Results.Redirect("/admin/index.html"));
 app.MapGet("/health", () => Results.Ok(new { status = "ok" })).AllowAnonymous();
 app.MapGet("/health/ready", async (HoaSapDbContext db, CancellationToken ct) =>
 {
@@ -128,6 +139,8 @@ app.MapGet("/health/ready", async (HoaSapDbContext db, CancellationToken ct) =>
         await db.Orders.AsNoTracking().Select(x => x.Id).Take(1).ToListAsync(ct);
         await db.Refunds.AsNoTracking().Select(x => new { x.TransactionCode, x.RequestedAt }).Take(1).ToListAsync(ct);
         await db.AuditLogs.AsNoTracking().Select(x => new { x.EntityType, x.OccurredAtUtc }).Take(1).ToListAsync(ct);
+        await db.Customers.AsNoTracking().Select(x => x.IsActive).Take(1).ToListAsync(ct);
+        await db.Categories.AsNoTracking().Select(x => x.ImageUrl).Take(1).ToListAsync(ct);
         return Results.Ok(new { status = "ready" });
     }
     catch (Exception) when (!ct.IsCancellationRequested)

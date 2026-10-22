@@ -155,6 +155,8 @@ public class HoaSapDbContext : DbContext
         b.Entity<AuditLog>().Property(x => x.TraceId).HasMaxLength(200);
 
         b.Entity<Customer>().HasIndex(x => x.PhoneNumber);
+        b.Entity<Customer>().Property(x => x.IsActive).HasDefaultValue(true);
+        b.Entity<Category>().Property(x => x.ImageUrl).HasDefaultValue("");
 
         b.Entity<Customer>().HasIndex(x => x.Email).IsUnique();
         b.Entity<Category>().HasIndex(x => x.Code).IsUnique();

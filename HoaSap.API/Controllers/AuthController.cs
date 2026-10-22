@@ -42,7 +42,7 @@ public sealed class AuthController(HoaSapDbContext db, IConfiguration config) : 
     public async Task<IActionResult> Login(LoginRequest request, CancellationToken ct)
     {
         var email = request.Email.Trim().ToLowerInvariant();
-        var user = await db.Customers.SingleOrDefaultAsync(x => x.Email == email && !x.IsGuest, ct);
+        var user = await db.Customers.SingleOrDefaultAsync(x => x.Email == email && !x.IsGuest && x.IsActive, ct);
         // A hash is always computed to reduce account-enumeration timing differences.
         var valid = user is not null
             ? PasswordService.Verify(request.Password, user.PasswordHash)
@@ -61,7 +61,7 @@ public sealed class AuthController(HoaSapDbContext db, IConfiguration config) : 
 
         if (!Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier), out var id))
             throw new BusinessException(401, "Phiên đăng nhập không hợp lệ.");
-        var user = await db.Customers.SingleOrDefaultAsync(x => x.Id == id && !x.IsGuest, ct);
+        var user = await db.Customers.SingleOrDefaultAsync(x => x.Id == id && !x.IsGuest && x.IsActive, ct);
         if (user is null || !PasswordService.Verify(request.CurrentPassword, user.PasswordHash))
             throw new BusinessException(401, "Mật khẩu hiện tại không đúng.");
         if (PasswordService.Verify(request.NewPassword, user.PasswordHash))
@@ -80,6 +80,7 @@ public sealed class AuthController(HoaSapDbContext db, IConfiguration config) : 
     {
         var id = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
         var user = await db.Customers.AsNoTracking().Where(x => x.Id == id)
+            .Where(x => x.IsActive && !x.IsGuest)
             .Select(x => new { x.Id, x.FullName, x.Email, x.PhoneNumber, x.Role }).SingleOrDefaultAsync(ct);
         return user is null ? NotFound() : Ok(user);
     }

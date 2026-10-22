@@ -13,7 +13,7 @@ public sealed class CatalogController(CommerceService service, HoaSapDbContext d
 
     [HttpGet("categories")]
     public async Task<IActionResult> Categories(CancellationToken ct) => Ok(await db.Categories.AsNoTracking().OrderBy(x => x.Name)
-        .Select(x => new { x.Id, x.Code, x.Name, x.Description }).ToListAsync(ct));
+        .Select(x => new { x.Id, x.Code, x.Name, x.Description, x.ImageUrl }).ToListAsync(ct));
 
     [HttpGet("products/{id:guid}")]
     public async Task<IActionResult> Product(Guid id, CancellationToken ct)

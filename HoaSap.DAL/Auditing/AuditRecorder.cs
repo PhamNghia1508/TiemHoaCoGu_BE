@@ -11,7 +11,10 @@ internal static class AuditRecorder
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private static readonly IReadOnlyDictionary<Type, string[]> Fields = new Dictionary<Type, string[]>
     {
+        [typeof(Customer)] = ["Role", "IsActive", "IsGuest", "CreatedAt"],
+        [typeof(Category)] = ["Code", "Name"],
         [typeof(Product)] = ["CategoryId", "Code", "Name", "Price", "OriginalPrice", "Badge", "Section", "IsCustomizable", "IsPreOrder", "IsActive"],
+        [typeof(ProductImage)] = ["ProductId", "DisplayOrder"],
         [typeof(Inventory)] = ["ProductId", "QuantityAvailable", "QuantityReserved", "LastUpdated"],
         [typeof(Voucher)] = ["Code", "DiscountType", "DiscountValue", "MinOrderAmount", "MaxDiscountAmount", "StartDate", "EndDate", "UsageLimit", "UsedCount", "IsActive"],
         [typeof(Order)] = ["OrderCode", "VoucherId", "SubTotal", "DiscountAmount", "ShippingFee", "TotalAmount", "OrderStatus", "PaymentStatus"],

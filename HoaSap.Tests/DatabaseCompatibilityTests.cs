@@ -33,6 +33,9 @@ public sealed class DatabaseCompatibilityTests
         Assert.Contains("IX_Refunds_TransactionCode", script);
         Assert.Contains("AddAuditLogs", script);
         Assert.Contains("CREATE TABLE [AuditLogs]", script);
+        Assert.Contains("AddIdentityCmsDefaults", script);
+        Assert.Contains("[IsActive]", script);
+        Assert.Contains("[ImageUrl]", script);
     }
 
     [SqlServerFact]
@@ -48,11 +51,19 @@ public sealed class DatabaseCompatibilityTests
         await using var db = new HoaSapDbContext(options);
         try
         {
+            await db.GetService<IMigrator>().MigrateAsync("20261022092453_AddAuditLogs");
+            var legacyAccount = Guid.NewGuid();
+            var legacyCategory = Guid.NewGuid();
+            await db.Database.ExecuteSqlInterpolatedAsync($"INSERT INTO [Customers] ([Id],[FullName],[PhoneNumber],[Email],[PasswordHash],[Role],[IsGuest],[CreatedAt]) VALUES ({legacyAccount},{"Legacy Admin"},{"0909876543"},{"legacy@example.test"},{"not-a-real-password-hash"},{"Admin"},{false},{DateTime.UtcNow})");
+            await db.Database.ExecuteSqlInterpolatedAsync($"INSERT INTO [Categories] ([Id],[Code],[Name],[Description]) VALUES ({legacyCategory},{"LEGACY"},{"Existing Category"},{"Preserved"})");
             await db.Database.MigrateAsync();
             Assert.True(await db.Database.CanConnectAsync());
             var applied = await db.Database.GetAppliedMigrationsAsync();
             Assert.Contains(applied, migration => migration.Contains("InitialProduction", StringComparison.Ordinal));
             Assert.Contains(applied, migration => migration.Contains("AddAuditLogs", StringComparison.Ordinal));
+            Assert.Contains(applied, migration => migration.Contains("AddIdentityCmsDefaults", StringComparison.Ordinal));
+            Assert.True((await db.Customers.SingleAsync(x => x.Id == legacyAccount)).IsActive);
+            Assert.Equal("", (await db.Categories.SingleAsync(x => x.Id == legacyCategory)).ImageUrl);
             Assert.Equal(0, await db.AuditLogs.CountAsync());
         }
         finally

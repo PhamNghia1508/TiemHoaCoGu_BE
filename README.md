@@ -10,7 +10,7 @@ Cài .NET SDK 8 hoặc mới hơn có runtime .NET 8. Không cần SQL Server đ
 ASPNETCORE_ENVIRONMENT=Development dotnet run --project HoaSap.API --no-launch-profile --urls http://localhost:5080
 ```
 
-Mở `http://localhost:5080/swagger`. Liveness: `GET /health`; readiness kiểm tra truy vấn database/schema: `GET /health/ready` (503 nếu chưa sẵn sàng).
+Mở admin web tại **`http://localhost:5080/admin`**; tài liệu API tại `http://localhost:5080/swagger`. Liveness: `GET /health`; readiness kiểm tra truy vấn database/schema: `GET /health/ready` (503 nếu chưa sẵn sàng).
 
 Development tự tạo database `hoasap.db`, seed danh mục, sản phẩm có tồn kho và một workshop có ca tương lai. Không có tài khoản quản trị/mật khẩu mặc định. Nếu chưa cấu hình khóa JWT, Development tự tạo khóa ngẫu nhiên; token cũ hết hiệu lực sau khi khởi động lại.
 
@@ -24,7 +24,7 @@ export Jwt__Key='<khoa-ngau-nhien-it-nhat-32-byte>'
 ASPNETCORE_ENVIRONMENT=Development dotnet run --project HoaSap.API --no-launch-profile --urls http://localhost:5080
 ```
 
-Đăng ký thường luôn tạo role `Customer`, không nhận role từ client. Admin/Staff mới được chỉnh catalog, tồn kho, voucher, đơn hàng và ghi nhận thanh toán. Các endpoint cá nhân chỉ truy cập dữ liệu của tài khoản đang đăng nhập. Mật khẩu được băm PBKDF2-SHA256 có salt, không xuất hiện trong response.
+Đăng ký thường luôn tạo role `Customer`, không nhận role từ client. Chỉ **Admin** được chỉnh catalog, tồn kho, voucher và tài khoản qua CMS. Admin/Staff giữ các luồng nghiệp vụ đơn hàng/workshop và ghi nhận thanh toán hiện có; không xây dựng bộ quyền Staff tùy biến đầy đủ. Các endpoint cá nhân chỉ truy cập dữ liệu của tài khoản đang đăng nhập. Mật khẩu được băm PBKDF2-SHA256 có salt, không xuất hiện trong response.
 
 ## Các nhóm API
 
@@ -41,7 +41,8 @@ Tài liệu schema/request chi tiết nằm trong Swagger sinh trực tiếp t�
 | Đặt hàng | `POST /api/orders/checkout` | Khách vãng lai / tài khoản |
 | Đơn hàng | `GET /api/orders`, `GET /api/orders/{id}`, `POST /api/orders/{id}/cancel` | Chủ đơn; danh sách tối đa 200 đơn mới nhất |
 | Giao hàng | `GET /api/orders/{id}/deliveries` | Chủ đơn |
-| Quản trị | `/api/management/*`, `GET /api/orders/staff`, trạng thái và deliveries | Admin/Staff |
+| CMS | `/api/management/*`, `/admin` | API chỉ Admin; trang đăng nhập public |
+| Nghiệp vụ đơn | `GET /api/orders/staff`, trạng thái và deliveries | Admin/Staff |
 | Trạng thái giao | `POST /api/orders/{id}/deliveries/{deliveryId}/status` | Admin/Staff |
 | Workshop | `/api/workshops`, `/{id}/sessions` | Đọc public; ghi Admin/Staff |
 | Đặt vé | `POST /api/bookings/sessions/{sessionId}`, `GET /api/bookings` | Khách vãng lai / chủ vé |
@@ -54,6 +55,27 @@ Tài liệu schema/request chi tiết nằm trong Swagger sinh trực tiếp t�
 | Ghi nhận đã hoàn | `POST /api/refunds/{id}/process` | Admin/Staff; cần `transactionCode` |
 
 Catalog hỗ trợ `page`, `pageSize` (tối đa 100), `search`, `categoryId`, `section`. Header đăng nhập: `Authorization: Bearer <accessToken>`.
+
+## CMS Admin web
+
+Mở `/admin` và đăng nhập bằng tài khoản có role **Admin**. Giao diện HTML/CSS/JavaScript được phục vụ cùng API, không cần build Node hoặc máy chủ frontend riêng. JWT chỉ giữ trong bộ nhớ trang; tải lại trang cần đăng nhập lại. UI không cấp quyền bảo mật: mọi endpoint CMS vẫn kiểm tra Admin ở server. Khóa tài khoản, đổi role hoặc reset mật khẩu làm token cũ bị từ chối ngay trên request tiếp theo. Không cho tự khóa/tự hạ quyền Admin; khách vãng lai không được chuyển thành tài khoản đăng nhập.
+
+| Chức năng | Endpoint (tiền tố `/api/management`) |
+|---|---|
+| Sản phẩm, kể cả đã ngừng bán | `GET/POST /products`, `GET/PUT/DELETE /products/{id}`, `PATCH /products/{id}/active?value=false` |
+| Danh mục và ảnh | `GET/POST /categories`, `PUT/DELETE /categories/{id}`; trường `imageUrl` |
+| Thư viện ảnh sản phẩm | `GET/POST /products/{id}/images`, `PUT/DELETE /products/{id}/images/{imageId}`; `imageUrl`, `displayOrder` |
+| Tồn kho khả dụng | `PUT /inventory/{productId}?quantity=...`; không đổi lượng đang giữ |
+| Tài khoản | `GET/POST /accounts`, `PUT /accounts/{id}`, `POST /accounts/{id}/reset-password` |
+| Ma trận quyền | `GET /permissions`; Admin quản trị CMS, Staff chỉ giữ các nghiệp vụ sẵn có, Customer chỉ dữ liệu của mình |
+| Voucher | `GET/POST /vouchers`, `PUT /vouchers/{id}`, `PATCH /vouchers/{id}/active?value=false` |
+| Đơn hàng | `GET /orders`, `GET /orders/{id}`; lọc `search`, `status`, `paymentStatus`, `from`, `to`, `page`, `pageSize` |
+| Dashboard, báo cáo | `GET /dashboard?from=...&to=...`, `GET /reports/orders.csv` |
+| Upload ảnh | `POST /media`, multipart trường `file`; trả `{url,fileName,contentType,size}` |
+
+Danh sách sản phẩm/tài khoản/voucher/đơn trả `{items,total,page,pageSize}` với `pageSize` tối đa 100. Danh mục trả mảng. Không xóa danh mục còn sản phẩm hoặc sản phẩm đang được tham chiếu trong giỏ/đơn; hãy tắt sản phẩm để giữ lịch sử. Voucher sửa không được giảm giới hạn dưới số lượt đã dùng; dừng voucher không xóa lịch sử sử dụng. Báo cáo CSV có xử lý ô có nguy cơ công thức bảng tính; mốc thời gian ISO-8601 theo UTC, `from` bao gồm và `to` không bao gồm. Dashboard mặc định 30 ngày UTC, khoảng chọn tối đa 366 ngày. Tiền thu/hoàn được tổng hợp cho nhóm đơn **tạo trong khoảng đã chọn**, không phải báo cáo dòng tiền theo ngày giao dịch; số khách/sản phẩm/tồn thấp là số toàn hệ thống. Doanh thu đơn không đồng nghĩa tiền thực thu; các chỉ số dựa trên ghi sổ, không phải xác nhận ngân hàng. CSV tối đa 10.000 đơn; vượt giới hạn trả lỗi yêu cầu thu hẹp bộ lọc, không âm thầm cắt dữ liệu.
+
+**Ảnh:** upload PNG/JPEG/WebP tối đa **900 KiB**, kiểm tra chữ ký định dạng, không nhận SVG/HTML hoặc dùng tên file do client cung cấp. API công khai `GET /api/media/{fileName}` chỉ phục vụ tên sinh ngẫu nhiên hợp lệ với MIME cố định và `nosniff`. Cũng có thể dùng URL HTTP(S) ngoài hoặc đường dẫn ảnh nội bộ do upload trả về. Đây không phải dịch vụ quét mã độc hay tái mã hóa ảnh. Tệp mặc định nằm ngoài webroot ở `HoaSap.API/App_Data/media`; production cần cấu hình `Media__StoragePath` trên volume bền vững, backup riêng và dùng shared storage nếu chạy nhiều instance. Xóa ảnh khỏi sản phẩm/danh mục chỉ gỡ liên kết; tệp không tự xóa để tránh làm hỏng liên kết dùng chung. Chưa có tự dọn tệp không dùng.
 
 ## Quy tắc nghiệp vụ
 
@@ -75,7 +97,7 @@ Với workshop, lần đầu phải đủ cọc; phần còn lại phải đư�
 
 Đổi mật khẩu gửi `{ "currentPassword": "...", "newPassword": "...", "confirmNewPassword": "..." }`. Mật khẩu mới phải khác mật khẩu cũ, dài 10–128 ký tự và có chữ hoa, chữ thường, chữ số, ký tự đặc biệt. Thành công trả `204`, sau đó phải đăng nhập lại. JWT gắn security stamp HMAC từ password hash; tất cả token cũ của tài khoản bị từ chối sau đổi mật khẩu. Cập nhật password dùng compare-and-swap để không ghi đè thay đổi đồng thời. Không thêm cột mật khẩu hoặc lưu token thô. **Token phát hành trước bản nâng cấp này không có stamp nên cũng cần đăng nhập lại một lần.** Chưa có quên mật khẩu hoặc refresh token.
 
-Audit log ghi các trường nghiệp vụ theo allowlist của Product, Inventory, Voucher, Order, Delivery, WorkshopSession, WorkshopBooking, Payment và Refund khi lưu qua EF ChangeTracker. Mỗi bản ghi có entity/id, thao tác, giá trị trước/sau, giờ UTC, actor/role và trace ID; được lưu cùng transaction với dữ liệu nghiệp vụ. Không snapshot toàn bộ object; loại mật khẩu, thông tin liên hệ/địa chỉ khách, ghi chú và nội dung phản hồi cổng thanh toán. Tác vụ nền/khách vãng lai có thể không có actor ID. Không cho sửa/xóa audit qua SaveChanges, nhưng đây **không phải kho nhật ký chống can thiệp ở mức database**; cần giới hạn quyền DB và chính sách lưu trữ riêng.
+Audit log ghi các trường nghiệp vụ theo allowlist của Customer (role/trạng thái, không chép thông tin liên hệ), Category, ProductImage, Product, Inventory, Voucher, Order, Delivery, WorkshopSession, WorkshopBooking, Payment và Refund khi lưu qua EF ChangeTracker. Mỗi bản ghi có entity/id, thao tác, giá trị trước/sau, giờ UTC, actor/role và trace ID; được lưu cùng transaction với dữ liệu nghiệp vụ. Không snapshot toàn bộ object; loại mật khẩu, thông tin liên hệ/địa chỉ khách, mô tả/ghi chú, URL ảnh có thể chứa token và nội dung phản hồi cổng thanh toán. Tác vụ nền/khách vãng lai có thể không có actor ID. Không cho sửa/xóa audit qua SaveChanges, nhưng đây **không phải kho nhật ký chống can thiệp ở mức database**; cần giới hạn quyền DB và chính sách lưu trữ riêng.
 
 Admin tra cứu `GET /api/management/audit-logs?entityType=Order&entityId=<guid>&actorId=<guid>&page=1&pageSize=50`; `pageSize` tối đa 100. Bộ lọc `from`/`to` nên truyền ISO-8601 có múi giờ, ví dụ `2026-10-22T00:00:00Z`. Các bulk update giữ kho khi checkout, nhả kho khi hủy/yêu cầu hoàn tiền, trừ kho đã giữ khi hoàn tất đơn và tăng lượt voucher dùng `ExecuteUpdateAuditedAsync`: snapshot trước/sau theo cùng allowlist, actor/role/trace và audit được ghi trong transaction Serializable của nghiệp vụ. Điều kiện đủ kho/lượt voucher vẫn được kiểm tra ở câu UPDATE; thao tác thất bại hoặc rollback không để lại log trong database. Inventory đổi concurrency token sau bulk update để ngăn ghi đè từ bản đọc cũ. **ExecuteUpdate/ExecuteDelete thông thường và SQL trực tiếp vẫn không tự có audit**; đường ghi mới phải chủ động tích hợp audit và kiểm thử rollback.
 
@@ -110,9 +132,11 @@ dotnet test HoaSap.Tests/HoaSap.Tests.csproj -c Release
 docker build -t hoasap-api .
 ```
 
-QA bản hoàn thiện bulk audit: **84 test đạt, 0 lỗi, 0 bỏ qua**; build Release **0 warning, 0 error**. Trong đó **9 test dùng SQL Server 2022 thật** (`16.0.4212.1`, Developer, instance test chỉ bind localhost): 1 test migration round-trip và 8 test nghiệp vụ/transaction. Đã kiểm tra snapshot kho/voucher trước–sau, actor/trace, checkout replay, rollback khi voucher không hợp lệ sau khi đã giữ kho, hủy/hoàn tiền nhả kho một lần, hoàn tất đơn trừ kho đã giữ một lần, tranh món hàng cuối và tranh lượt voucher cuối giữa hai sản phẩm khác nhau, cùng guard từ chối isolation thấp hơn Serializable. Các test helper bổ sung kiểm tra retry SaveChanges, rollback rồi tái sử dụng DbContext không sinh log ảo, chuỗi snapshot nhiều lần cập nhật và chống ghi đè từ inventory đọc cũ. Suite còn giữ các test bảo mật/phân quyền/workshop/request diagnostics trước đó. Đây là kiểm thử chức năng và cạnh tranh có giới hạn, **không phải kiểm thử tải** hoặc chứng nhận production.
+QA CMS Admin: **107 test đạt, 0 lỗi, 0 bỏ qua**; build Release **0 warning, 0 error**. Trong đó **9 test dùng SQL Server 2022 thật** (`16.0.4212.1`, Developer, instance test chỉ bind localhost): 1 test migration nâng cấp từ schema audit cũ, giữ nguyên tài khoản/danh mục với default CMS, và 8 test nghiệp vụ/transaction. Đã kiểm tra snapshot kho/voucher trước–sau, actor/trace, checkout replay, rollback khi voucher không hợp lệ sau khi đã giữ kho, hủy/hoàn tiền nhả kho một lần, hoàn tất đơn trừ kho đã giữ một lần, tranh món hàng cuối và tranh lượt voucher cuối giữa hai sản phẩm khác nhau, cùng guard từ chối isolation thấp hơn Serializable. Các test helper bổ sung kiểm tra retry SaveChanges, rollback rồi tái sử dụng DbContext không sinh log ảo, chuỗi snapshot nhiều lần cập nhật và chống ghi đè từ inventory đọc cũ. Suite còn giữ các test bảo mật/phân quyền/workshop/request diagnostics trước đó. Đây là kiểm thử chức năng và cạnh tranh có giới hạn, **không phải kiểm thử tải** hoặc chứng nhận production.
 
 Dockerfile chỉ đóng gói API; không kèm secrets/database. CI GitHub Actions build/test .NET 8 và khai báo SQL Server 2022 service. Kiểm thử SQL Server opt-in qua `HOASAP_TEST_SQLSERVER`: tạo database tên GUID riêng, áp dụng migration và xóa database test khi kết thúc; chỉ dùng tài khoản/máy chủ test có quyền tạo/xóa database. Nếu thiếu biến này, cả 9 test SQL Server được đánh dấu **Skipped**, không tính là đã kiểm chứng SQL Server. Các test HTTP API và helper SQLite vẫn dùng SQLite; test SQL Server mới gọi service/DbContext với database thật. Kết quả QA nêu trên chạy cục bộ, không phải xác nhận một lần chạy GitHub Actions đã thành công.
+
+Migration CMS **`20261022193130_AddIdentityCmsDefaults`** thêm `Customers.IsActive` mặc định `true` và `Categories.ImageUrl` mặc định chuỗi rỗng, không khóa tài khoản cũ. SQL Server có lịch sử EF hợp lệ phải áp dụng migration/script đã review trước khi chạy bản mới; readiness trả 503 nếu thiếu cột. SQLite Development cũ không tự thêm cột qua EnsureCreated. Smoke test trình duyệt đã kiểm tra đăng nhập Admin, tạo danh mục/sản phẩm, chỉnh tồn kho, upload và gắn ảnh gallery hiển thị thật. Đây chưa phải một bộ kiểm thử E2E tự động hay chứng nhận production.
 
 ## Cấu trúc và các điểm cần biết
 
@@ -124,4 +148,4 @@ Dockerfile chỉ đóng gói API; không kèm secrets/database. CI GitHub Action
 
 Hai điều chỉnh so với sơ đồ ban đầu: `Category.Id` dùng GUID thay vì số nguyên; đơn/vé khách vãng lai có thể để `CustomerId` null và lưu snapshot thông tin đặt chỗ/giao nhận, không tự liên kết vào tài khoản đăng ký chỉ vì trùng số điện thoại. Giúp tránh gán nhầm dữ liệu riêng của khách.
 
-Backend đã được củng cố cho các luồng đơn hàng/workshop, nhưng **chưa được chứng nhận sẵn sàng vận hành bán hàng thật**. Chưa có frontend, upload ảnh/media storage, email/SMS, quên mật khẩu/refresh token, điều chỉnh giá custom có lịch sử duyệt, tích hợp vận chuyển/cổng thanh toán, chính sách hoàn tiền tự động, audit cho mọi đường ghi dữ liệu hoặc kiểm thử tải. Chưa có tự hết hạn đơn hàng chưa trả tiền; nhân viên cần kiểm tra và hủy đơn bỏ dở để nhả kho. Lượt voucher đã dùng không tự phục hồi khi hủy/hoàn; cần chốt chính sách trước khi thay đổi. Các trường hình ảnh/diễn giả có trong model nhưng chưa có toàn bộ CRUD riêng. Kiểm thử SQL Server cục bộ không thay thế việc kiểm chứng migration/backup/restore và tải đồng thời trên hạ tầng triển khai; cũng không coi test chỉ sinh schema SQL là test SQL Server thực.
+Backend đã được củng cố cho các luồng đơn hàng/workshop, nhưng **chưa được chứng nhận sẵn sàng vận hành bán hàng thật**. Đã có frontend admin web và upload ảnh cục bộ; chưa có frontend cửa hàng, media storage phân tán/CDN, email/SMS, quên mật khẩu/refresh token, điều chỉnh giá custom có lịch sử duyệt, tích hợp vận chuyển/cổng thanh toán, chính sách hoàn tiền tự động, audit cho mọi đường ghi dữ liệu hoặc kiểm thử tải. Chưa có tự hết hạn đơn hàng chưa trả tiền; nhân viên cần kiểm tra và hủy đơn bỏ dở để nhả kho. Lượt voucher đã dùng không tự phục hồi khi hủy/hoàn; cần chốt chính sách trước khi thay đổi. Ảnh sản phẩm/danh mục đã có quản lý trong CMS; CRUD diễn giả chưa được mở rộng. Kiểm thử SQL Server cục bộ không thay thế việc kiểm chứng migration/backup/restore và tải đồng thời trên hạ tầng triển khai; cũng không coi test chỉ sinh schema SQL là test SQL Server thực.

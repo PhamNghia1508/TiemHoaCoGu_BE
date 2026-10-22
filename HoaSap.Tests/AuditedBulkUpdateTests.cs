@@ -71,7 +71,7 @@ public sealed class AuditedBulkUpdateTests
         await using var store = new Store();
         await using var tx = await store.Db.Database.BeginTransactionAsync(IsolationLevel.Serializable);
         await Assert.ThrowsAsync<InvalidOperationException>(() => store.Db.ExecuteUpdateAuditedAsync(
-            store.Db.Categories, s => s.SetProperty(x => x.Name, "Changed")));
+            store.Db.Instructors, s => s.SetProperty(x => x.FullName, "Changed")));
         Assert.Equal("Bulk", await store.Db.Categories.Select(x => x.Name).SingleAsync());
     }
 

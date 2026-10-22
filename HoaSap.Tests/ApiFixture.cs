@@ -26,6 +26,7 @@ public sealed class ApiFixture : WebApplicationFactory<Program>
         {
             ["Database:Provider"] = "Sqlite",
             ["ConnectionStrings:DefaultConnection"] = $"Data Source={_dbPath}",
+            ["Media:StoragePath"] = _dbPath + "-media",
             ["Database:Initialize"] = "true",
             ["Database:Seed"] = "false",
             ["RateLimiting:AuthPermitLimit"] = _authPermitLimit.ToString(System.Globalization.CultureInfo.InvariantCulture),
@@ -44,6 +45,7 @@ public sealed class ApiFixture : WebApplicationFactory<Program>
         base.Dispose(disposing);
         try { File.Delete(_dbPath); } catch { }
         try { File.Delete(_dbPath + "-shm"); File.Delete(_dbPath + "-wal"); } catch { }
+        try { Directory.Delete(_dbPath + "-media", true); } catch { }
     }
 }
 
