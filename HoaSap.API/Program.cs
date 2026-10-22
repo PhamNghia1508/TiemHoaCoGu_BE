@@ -17,6 +17,13 @@ using Microsoft.OpenApi.Models;
 
 var builder = WebApplication.CreateBuilder(args);
 var isDev = builder.Environment.IsDevelopment();
+if (!isDev && (builder.Configuration.GetValue<bool>("Database:Initialize") || builder.Configuration.GetValue<bool>("Database:Seed")))
+    throw new InvalidOperationException("Production requires reviewed database migrations; development initialization and seed must be disabled.");
+builder.WebHost.ConfigureKestrel(options =>
+{
+    options.AddServerHeader = false;
+    options.Limits.MaxRequestBodySize = 1024 * 1024;
+});
 var key = builder.Configuration["Jwt:Key"];
 if (string.IsNullOrWhiteSpace(key))
 {
@@ -35,6 +42,7 @@ builder.Services.AddDbContext<HoaSapDbContext>(options =>
 });
 builder.Services.AddScoped<CommerceService>();
 builder.Services.AddScoped<WorkshopService>();
+builder.Services.AddScoped<RefundService>();
 builder.Services.AddHostedService<BookingExpiryWorker>();
 builder.Services.AddControllers().AddJsonOptions(o => o.JsonSerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter()));
 builder.Services.AddEndpointsApiExplorer();
@@ -89,6 +97,20 @@ app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
 app.MapGet("/health", () => Results.Ok(new { status = "ok" })).AllowAnonymous();
+app.MapGet("/health/ready", async (HoaSapDbContext db, CancellationToken ct) =>
+{
+    try
+    {
+        // Query a mapped table as well as opening a connection: an empty database is not ready.
+        await db.Orders.AsNoTracking().Select(x => x.Id).Take(1).ToListAsync(ct);
+        await db.Refunds.AsNoTracking().Select(x => new { x.TransactionCode, x.RequestedAt }).Take(1).ToListAsync(ct);
+        return Results.Ok(new { status = "ready" });
+    }
+    catch (Exception) when (!ct.IsCancellationRequested)
+    {
+        return Results.Json(new { status = "not_ready" }, statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+}).AllowAnonymous();
 
 await using (var scope = app.Services.CreateAsyncScope())
 {

@@ -1,5 +1,8 @@
 using System.ComponentModel.DataAnnotations;
 using System.Data;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 using HoaSap.BLL;
 using HoaSap.DAL;
 using HoaSap.Domain.Entities;
@@ -45,6 +48,7 @@ public sealed class CheckoutRequest
     [EmailAddress, MaxLength(320)] public string? ReceiverEmail { get; set; }
     [MaxLength(1000)] public string? Note { get; set; }
     [MaxLength(40)] public string? VoucherCode { get; set; }
+    [MaxLength(100)] public string? IdempotencyKey { get; set; }
     public List<CartItemRequest> Items { get; set; } = [];
 }
 
@@ -129,17 +133,56 @@ public sealed class CommerceService(HoaSapDbContext db)
 
     public async Task<OrderDto> CheckoutAsync(Guid? customerId, CheckoutRequest request, CancellationToken ct = default)
     {
+        if (request is null) throw Bad("Dữ liệu checkout không hợp lệ");
         if (string.IsNullOrWhiteSpace(request.ShippingAddress)) throw Bad("Thiếu địa chỉ giao hàng");
         if (customerId is null && (string.IsNullOrWhiteSpace(request.ReceiverName) || string.IsNullOrWhiteSpace(request.ReceiverPhone)))
             throw Bad("Khách vãng lai phải cung cấp tên và số điện thoại người nhận");
+        if (request.Items is null || request.Items.Count > 100 || request.Items.Any(x => x is null || x.Quantity is < 1 or > 1000))
+            throw Bad("Danh sách sản phẩm không hợp lệ; tối đa 100 dòng");
+        if (request.IdempotencyKey?.Length > 100) throw Bad("IdempotencyKey tối đa 100 ký tự");
+        var key = string.IsNullOrWhiteSpace(request.IdempotencyKey) ? null : request.IdempotencyKey.Trim();
+        var fingerprint = Fingerprint(customerId, request);
 
-        var lines = request.Items.GroupBy(x => x.ProductId).Select(g => new Line(g.Key, g.Sum(x => x.Quantity), g.Last().CustomNote, g.Last().ReferenceImageUrl)).ToList();
-        if (lines.Any(x => x.Quantity < 1 || x.Quantity > 1000)) throw Bad("Số lượng không hợp lệ");
+        // Idempotency is deliberately checked before reading the cart: a replay must work after its cart snapshot was deleted.
+        if (key is not null)
+        {
+            var prior = await db.Orders.AsNoTracking().Include(x => x.Items)
+                .SingleOrDefaultAsync(x => x.CustomerId == customerId && x.IdempotencyKey == key, ct);
+            if (prior is not null)
+            {
+                if (!string.Equals(prior.RequestFingerprint, fingerprint, StringComparison.Ordinal))
+                    throw Conflict("IdempotencyKey đã được dùng cho payload khác");
+                return Map(prior, await ShippedQuantitiesAsync(prior.Items.Select(x => x.Id), ct));
+            }
+        }
+
+        var requested = request.Items ?? throw Bad("Danh sách sản phẩm không hợp lệ");
+        // Validate every raw line before grouping, including null/zero/negative/overflow input.
+        if (requested.Any(x => x is null || x.Quantity < 1 || x.Quantity > 1000)) throw Bad("Số lượng không hợp lệ");
+        var lines = new List<Line>();
+        foreach (var group in requested.GroupBy(x => x.ProductId))
+        {
+            var total = group.Sum(x => (long)x.Quantity);
+            if (total is < 1 or > 1000) throw Bad("Số lượng không hợp lệ");
+            var last = group.Last(); lines.Add(new Line(group.Key, (int)total, last.CustomNote, last.ReferenceImageUrl));
+        }
         if (customerId is { } id && lines.Count == 0)
             lines = (await db.ShoppingCartItems.AsNoTracking().Where(x => x.CustomerId == id).ToListAsync(ct)).Select(x => new Line(x.ProductId, x.Quantity, x.CustomNote, x.ReferenceImageUrl)).ToList();
         if (lines.Count == 0) throw Bad("Giỏ hàng trống");
+        if (lines.Any(x => x.Quantity < 1 || x.Quantity > 1000)) throw Bad("Số lượng không hợp lệ");
 
         await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct);
+        // Re-check inside the serializable transaction to close the race between pre-check and insert.
+        if (key is not null)
+        {
+            var prior = await db.Orders.Include(x => x.Items).SingleOrDefaultAsync(x => x.CustomerId == customerId && x.IdempotencyKey == key, ct);
+            if (prior is not null)
+            {
+                if (!string.Equals(prior.RequestFingerprint, fingerprint, StringComparison.Ordinal)) throw Conflict("IdempotencyKey đã được dùng cho payload khác");
+                await transaction.RollbackAsync(ct);
+                return Map(prior, await ShippedQuantitiesAsync(prior.Items.Select(x => x.Id), ct));
+            }
+        }
         var products = await db.Products.Where(p => lines.Select(x => x.ProductId).Contains(p.Id) && p.IsActive).ToDictionaryAsync(p => p.Id, ct);
         if (products.Count != lines.Count) throw Bad("Có sản phẩm không còn bán");
         decimal subtotal = 0;
@@ -149,13 +192,11 @@ public sealed class CommerceService(HoaSapDbContext db)
             if (product.IsPreOrder) throw Conflict("Sản phẩm đặt trước chưa hỗ trợ MVP");
             if (!product.IsCustomizable && (!string.IsNullOrWhiteSpace(line.Note) || !string.IsNullOrWhiteSpace(line.Image))) throw Bad("Sản phẩm không cho phép tùy chỉnh");
             var affected = await db.Inventories.Where(i => i.ProductId == line.ProductId && i.QuantityAvailable >= line.Quantity)
-                .ExecuteUpdateAsync(s => s.SetProperty(i => i.QuantityAvailable, i => i.QuantityAvailable - line.Quantity).SetProperty(i => i.QuantityReserved, i => i.QuantityReserved + line.Quantity).SetProperty(i => i.LastUpdated, DateTime.UtcNow), ct);
+                .ExecuteUpdateAsync(x => x.SetProperty(i => i.QuantityAvailable, i => i.QuantityAvailable - line.Quantity).SetProperty(i => i.QuantityReserved, i => i.QuantityReserved + line.Quantity).SetProperty(i => i.LastUpdated, DateTime.UtcNow), ct);
             if (affected != 1) throw Conflict("Tồn kho vừa thay đổi, vui lòng thử lại");
             subtotal += product.Price * line.Quantity;
         }
-
-        decimal discount = 0;
-        Voucher? voucher = null;
+        decimal discount = 0; Voucher? voucher = null;
         if (!string.IsNullOrWhiteSpace(request.VoucherCode))
         {
             voucher = await db.Vouchers.SingleOrDefaultAsync(x => x.Code == request.VoucherCode.Trim() && x.IsActive, ct) ?? throw Bad("Voucher không hợp lệ");
@@ -164,36 +205,42 @@ public sealed class CommerceService(HoaSapDbContext db)
             discount = voucher.DiscountType == "Percentage" ? subtotal * voucher.DiscountValue / 100m : voucher.DiscountValue;
             if (voucher.MaxDiscountAmount is { } maximum) discount = Math.Min(discount, maximum);
             discount = Math.Round(Math.Min(discount, subtotal), 0, MidpointRounding.AwayFromZero);
-            var used = await db.Vouchers.Where(v => v.Id == voucher.Id && v.IsActive && v.UsedCount < v.UsageLimit)
-                .ExecuteUpdateAsync(s => s.SetProperty(v => v.UsedCount, v => v.UsedCount + 1), ct);
-            if (used != 1) throw Conflict("Voucher vừa hết lượt sử dụng");
+            if (await db.Vouchers.Where(v => v.Id == voucher.Id && v.IsActive && v.UsedCount < v.UsageLimit).ExecuteUpdateAsync(x => x.SetProperty(v => v.UsedCount, v => v.UsedCount + 1), ct) != 1) throw Conflict("Voucher vừa hết lượt sử dụng");
         }
-
         var customer = customerId is { } buyerId ? await db.Customers.AsNoTracking().SingleOrDefaultAsync(x => x.Id == buyerId, ct) : null;
         var address = $"ReceiverName: {(request.ReceiverName ?? customer?.FullName ?? "")}; ReceiverPhone: {(request.ReceiverPhone ?? customer?.PhoneNumber ?? "")}; ReceiverEmail: {(request.ReceiverEmail ?? customer?.Email ?? "")}; Address: {request.ShippingAddress.Trim()}";
-        var order = new Order { Id = Guid.NewGuid(), CustomerId = customerId, VoucherId = voucher?.Id, OrderCode = $"ORD-{DateTime.UtcNow:yyyyMMdd}-{Guid.NewGuid():N}", SubTotal = subtotal, DiscountAmount = discount, ShippingFee = CommerceRules.ShippingFee, TotalAmount = subtotal - discount + CommerceRules.ShippingFee, OrderStatus = "Confirmed", PaymentStatus = "Unpaid", ShippingAddress = address, Note = request.Note ?? "", CreatedAt = DateTime.UtcNow };
-        foreach (var line in lines)
-        {
-            var product = products[line.ProductId];
-            order.Items.Add(new OrderItem { Id = Guid.NewGuid(), OrderId = order.Id, ProductId = product.Id, Quantity = line.Quantity, UnitPrice = product.Price, FinalPrice = product.Price, CustomNote = line.Note ?? "", ReferenceImageUrl = line.Image ?? "" });
-        }
+        var order = new Order { Id = Guid.NewGuid(), CustomerId = customerId, IdempotencyKey = key, RequestFingerprint = fingerprint, VoucherId = voucher?.Id, OrderCode = $"ORD-{DateTime.UtcNow:yyyyMMdd}-{Guid.NewGuid():N}", SubTotal = subtotal, DiscountAmount = discount, ShippingFee = CommerceRules.ShippingFee, TotalAmount = subtotal - discount + CommerceRules.ShippingFee, OrderStatus = "Confirmed", PaymentStatus = "Unpaid", ShippingAddress = address, Note = request.Note ?? "", CreatedAt = DateTime.UtcNow };
+        foreach (var line in lines) { var product = products[line.ProductId]; order.Items.Add(new OrderItem { Id = Guid.NewGuid(), OrderId = order.Id, ProductId = product.Id, Quantity = line.Quantity, UnitPrice = product.Price, FinalPrice = product.Price, CustomNote = line.Note ?? "", ReferenceImageUrl = line.Image ?? "" }); }
         db.Orders.Add(order);
-        if (customerId is { } ownerId)
-        {
-            var old = await db.ShoppingCartItems.Where(x => x.CustomerId == ownerId && lines.Select(z => z.ProductId).Contains(x.ProductId)).ToListAsync(ct);
-            db.ShoppingCartItems.RemoveRange(old);
-        }
-        await db.SaveChangesAsync(ct);
-        await transaction.CommitAsync(ct);
+        if (customerId is { } ownerId) db.ShoppingCartItems.RemoveRange(await db.ShoppingCartItems.Where(x => x.CustomerId == ownerId && lines.Select(z => z.ProductId).Contains(x.ProductId)).ToListAsync(ct));
+        try { await db.SaveChangesAsync(ct); await transaction.CommitAsync(ct); }
+        catch (DbUpdateException) { throw Conflict("Yêu cầu checkout trùng hoặc vừa thay đổi, vui lòng thử lại"); }
         return Map(order);
+    }
+
+    public async Task<IReadOnlyList<OrderDto>> OwnOrdersAsync(Guid customerId, CancellationToken ct = default)
+    {
+        var orders = await db.Orders.AsNoTracking().Include(x => x.Items).Where(x => x.CustomerId == customerId).OrderByDescending(x => x.CreatedAt).Take(200).ToListAsync(ct);
+        var shipped = await ShippedQuantitiesAsync(orders.SelectMany(x => x.Items).Select(x => x.Id), ct);
+        return orders.Select(x => Map(x, shipped)).ToList();
     }
 
     public async Task<OrderDto> OwnOrderAsync(Guid customerId, Guid orderId, CancellationToken ct = default)
     {
         var order = await db.Orders.Include(x => x.Items).SingleOrDefaultAsync(x => x.Id == orderId && x.CustomerId == customerId, ct) ?? throw NF("Không tìm thấy đơn");
-        var shipped = await ShippedQuantitiesAsync(order.Items.Select(x => x.Id), ct);
-        return Map(order, shipped);
+        return Map(order, await ShippedQuantitiesAsync(order.Items.Select(x => x.Id), ct));
     }
+
+    public async Task<IReadOnlyList<DeliveryDto>> DeliveriesAsync(Guid customerId, Guid orderId, CancellationToken ct = default)
+    {
+        if (!await db.Orders.AnyAsync(x => x.Id == orderId && x.CustomerId == customerId, ct)) throw NF("Không tìm thấy đơn");
+        return await db.Deliveries.AsNoTracking().Include(x => x.Items).Where(x => x.OrderId == orderId).OrderBy(x => x.DeliveryCode)
+            .Select(x => new DeliveryDto(x.Id, x.DeliveryCode, x.ShipperUnit, x.TrackingNumber, x.DeliveryStatus, x.Items.Select(i => new DeliveryLineDto(i.OrderItemId, i.ShippedQuantity)).ToList())).ToListAsync(ct);
+    }
+
+    public async Task<IReadOnlyList<DeliveryDto>> StaffDeliveriesAsync(Guid orderId, CancellationToken ct = default) =>
+        await db.Deliveries.AsNoTracking().Include(x => x.Items).Where(x => x.OrderId == orderId).OrderBy(x => x.DeliveryCode)
+            .Select(x => new DeliveryDto(x.Id, x.DeliveryCode, x.ShipperUnit, x.TrackingNumber, x.DeliveryStatus, x.Items.Select(i => new DeliveryLineDto(i.OrderItemId, i.ShippedQuantity)).ToList())).ToListAsync(ct);
 
     public async Task CancelAsync(Guid customerId, Guid orderId, CancellationToken ct = default)
     {
@@ -202,89 +249,66 @@ public sealed class CommerceService(HoaSapDbContext db)
         if (order.OrderStatus == "Cancelled") return;
         if (order.PaymentStatus != "Unpaid") throw Conflict("Đơn đã có khoản thanh toán; cần quy trình hoàn tiền trước khi hủy");
         if (order.OrderStatus is "Delivering" or "Completed") throw Conflict("Đơn đã giao, không thể hủy");
-        await ReleaseReservedAsync(order.Items, ct);
-        order.OrderStatus = "Cancelled";
-        await db.SaveChangesAsync(ct);
-        await transaction.CommitAsync(ct);
+        if (await db.Deliveries.AnyAsync(x => x.OrderId == orderId && x.DeliveryStatus != "Cancelled", ct)) throw Conflict("Đơn có giao hàng đang xử lý, không thể hủy");
+        await ReleaseReservedAsync(order.Items, ct); order.OrderStatus = "Cancelled"; await db.SaveChangesAsync(ct); await transaction.CommitAsync(ct);
     }
 
     public async Task<IReadOnlyList<OrderDto>> StaffOrdersAsync(CancellationToken ct = default)
     {
         var orders = await db.Orders.Include(x => x.Items).OrderByDescending(x => x.CreatedAt).Take(200).ToListAsync(ct);
-        var shipped = await ShippedQuantitiesAsync(orders.SelectMany(x => x.Items).Select(x => x.Id), ct);
-        return orders.Select(x => Map(x, shipped)).ToList();
+        var shipped = await ShippedQuantitiesAsync(orders.SelectMany(x => x.Items).Select(x => x.Id), ct); return orders.Select(x => Map(x, shipped)).ToList();
     }
 
     public async Task TransitionAsync(Guid orderId, string status, CancellationToken ct = default)
     {
-        status = status?.Trim() ?? "";
-        await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct);
+        status = status?.Trim() ?? ""; await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct);
         var order = await db.Orders.Include(x => x.Items).SingleOrDefaultAsync(x => x.Id == orderId, ct) ?? throw NF("Không tìm thấy đơn");
-        if (status == "Cancelled")
-        {
-            if (order.PaymentStatus != "Unpaid") throw Conflict("Đơn đã có khoản thanh toán; cần quy trình hoàn tiền trước khi hủy");
-            if (order.OrderStatus is not ("Confirmed" or "Processing")) throw Conflict("Chuyển trạng thái không hợp lệ");
-            await ReleaseReservedAsync(order.Items, ct);
-        }
-        else if ((order.OrderStatus, status) is not ("Confirmed", "Processing") and not ("Processing", "Delivering") and not ("Delivering", "Completed"))
-        {
-            throw Conflict("Chuyển trạng thái không hợp lệ");
-        }
+        if (order.OrderStatus == status) { await transaction.RollbackAsync(ct); return; }
+        if (status == "Cancelled") { if (order.PaymentStatus != "Unpaid" || order.OrderStatus is not ("Confirmed" or "Processing")) throw Conflict("Chuyển trạng thái không hợp lệ"); if (await db.Deliveries.AnyAsync(x => x.OrderId == orderId && x.DeliveryStatus != "Cancelled", ct)) throw Conflict("Đơn có giao hàng đang xử lý, không thể hủy"); await ReleaseReservedAsync(order.Items, ct); }
+        else if ((order.OrderStatus, status) is not ("Confirmed", "Processing") and not ("Processing", "Delivering") and not ("Delivering", "Completed")) throw Conflict("Chuyển trạng thái không hợp lệ");
         if (status == "Completed")
         {
             if (order.PaymentStatus != "Paid") throw Conflict("Chỉ hoàn tất đơn đã thanh toán");
-            var shipped = await db.DeliveryItems.Where(x => order.Items.Select(i => i.Id).Contains(x.OrderItemId)).GroupBy(x => x.OrderItemId).Select(g => new { OrderItemId = g.Key, Quantity = g.Sum(x => x.ShippedQuantity) }).ToDictionaryAsync(x => x.OrderItemId, ct);
-            if (order.Items.Any(i => !shipped.TryGetValue(i.Id, out var quantity) || quantity.Quantity < i.Quantity)) throw Conflict("Chưa giao đủ tất cả sản phẩm");
-            foreach (var item in order.Items) await db.Inventories.Where(i => i.ProductId == item.ProductId && i.QuantityReserved >= item.Quantity).ExecuteUpdateAsync(s => s.SetProperty(i => i.QuantityReserved, i => i.QuantityReserved - item.Quantity).SetProperty(i => i.LastUpdated, DateTime.UtcNow), ct);
+            var shipped = await DeliveredQuantitiesAsync(order.Items.Select(i => i.Id), ct);
+            if (order.Items.Any(i => !shipped.TryGetValue(i.Id, out var quantity) || quantity < i.Quantity)) throw Conflict("Chưa giao đủ tất cả sản phẩm");
+            foreach (var group in order.Items.GroupBy(i => i.ProductId)) { var quantity = group.Sum(i => i.Quantity); var affected = await db.Inventories.Where(i => i.ProductId == group.Key && i.QuantityReserved >= quantity).ExecuteUpdateAsync(x => x.SetProperty(i => i.QuantityReserved, i => i.QuantityReserved - quantity).SetProperty(i => i.LastUpdated, DateTime.UtcNow), ct); if (affected != 1) throw Conflict("Không thể trừ tồn kho đã giữ"); }
         }
-        order.OrderStatus = status;
-        await db.SaveChangesAsync(ct);
-        await transaction.CommitAsync(ct);
+        order.OrderStatus = status; await db.SaveChangesAsync(ct); await transaction.CommitAsync(ct);
     }
 
     public async Task<DeliveryDto> DeliveryAsync(Guid orderId, DeliveryRequest request, CancellationToken ct = default)
     {
+        if (request is null || request.Items is null || request.Items.Count == 0) throw Bad("Delivery trống");
+        if (request.Items.Any(x => x is null || x.Quantity <= 0)) throw Bad("Số lượng giao phải lớn hơn 0");
         await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct);
         var order = await db.Orders.Include(x => x.Items).SingleOrDefaultAsync(x => x.Id == orderId, ct) ?? throw NF("Không tìm thấy đơn");
         if (order.OrderStatus is not ("Processing" or "Delivering")) throw Conflict("Chỉ tạo giao hàng cho đơn Processing hoặc Delivering");
-        var grouped = request.Items.GroupBy(x => x.OrderItemId).Select(g => new DeliveryLineRequest { OrderItemId = g.Key, Quantity = g.Sum(x => x.Quantity) }).ToList();
-        if (grouped.Any(x => x.Quantity <= 0)) throw Bad("Số lượng giao phải lớn hơn 0");
+        var grouped = new List<DeliveryLineRequest>();
+        foreach (var group in request.Items.GroupBy(x => x.OrderItemId))
+        {
+            var quantity = group.Sum(x => (long)x.Quantity);
+            if (quantity > int.MaxValue) throw Bad("Tổng số lượng giao vượt giới hạn");
+            grouped.Add(new DeliveryLineRequest { OrderItemId = group.Key, Quantity = (int)quantity });
+        }
         var delivery = new Delivery { Id = Guid.NewGuid(), OrderId = orderId, DeliveryCode = $"DEL-{Guid.NewGuid():N}", ShipperUnit = request.ShipperUnit ?? "", TrackingNumber = request.TrackingNumber ?? "", DeliveryStatus = "Preparing" };
-        foreach (var requested in grouped)
-        {
-            var line = order.Items.SingleOrDefault(i => i.Id == requested.OrderItemId) ?? throw Bad("OrderItem không thuộc đơn");
-            var used = await db.DeliveryItems.Where(y => y.OrderItemId == line.Id).SumAsync(y => (int?)y.ShippedQuantity, ct) ?? 0;
-            if (requested.Quantity > line.Quantity - used) throw Conflict("Vượt quá lượng chưa giao");
-            delivery.Items.Add(new DeliveryItem { Id = Guid.NewGuid(), DeliveryId = delivery.Id, OrderItemId = line.Id, ShippedQuantity = requested.Quantity });
-        }
-        if (delivery.Items.Count == 0) throw Bad("Delivery trống");
-        db.Deliveries.Add(delivery);
-        await db.SaveChangesAsync(ct);
-        await transaction.CommitAsync(ct);
-        return new(delivery.Id, delivery.DeliveryCode, delivery.ShipperUnit, delivery.TrackingNumber, delivery.DeliveryStatus, delivery.Items.Select(x => new DeliveryLineDto(x.OrderItemId, x.ShippedQuantity)).ToList());
+        foreach (var requested in grouped) { var line = order.Items.SingleOrDefault(i => i.Id == requested.OrderItemId) ?? throw Bad("OrderItem không thuộc đơn"); var used = await db.DeliveryItems.Where(y => y.OrderItemId == line.Id).Where(y => db.Deliveries.Any(d => d.Id == y.DeliveryId && d.DeliveryStatus != "Cancelled")).SumAsync(y => (int?)y.ShippedQuantity, ct) ?? 0; if (requested.Quantity > line.Quantity - used) throw Conflict("Vượt quá lượng chưa giao"); delivery.Items.Add(new DeliveryItem { Id = Guid.NewGuid(), DeliveryId = delivery.Id, OrderItemId = line.Id, ShippedQuantity = requested.Quantity }); }
+        db.Deliveries.Add(delivery); await db.SaveChangesAsync(ct); await transaction.CommitAsync(ct); return ToDto(delivery);
     }
 
-    async Task ReleaseReservedAsync(IEnumerable<OrderItem> items, CancellationToken ct)
+    public async Task<DeliveryDto> TransitionDeliveryAsync(Guid orderId, Guid deliveryId, string status, CancellationToken ct = default)
     {
-        foreach (var group in items.GroupBy(x => x.ProductId))
-        {
-            var quantity = group.Sum(x => x.Quantity);
-            var affected = await db.Inventories.Where(x => x.ProductId == group.Key && x.QuantityReserved >= quantity)
-                .ExecuteUpdateAsync(s => s.SetProperty(x => x.QuantityAvailable, x => x.QuantityAvailable + quantity).SetProperty(x => x.QuantityReserved, x => x.QuantityReserved - quantity).SetProperty(x => x.LastUpdated, DateTime.UtcNow), ct);
-            if (affected != 1) throw Conflict("Không thể giải phóng tồn kho");
-        }
+        status = status?.Trim() ?? ""; await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct); var delivery = await db.Deliveries.Include(x => x.Items).SingleOrDefaultAsync(x => x.Id == deliveryId && x.OrderId == orderId, ct) ?? throw NF("Không tìm thấy giao hàng");
+        if (delivery.DeliveryStatus == status) { await tx.RollbackAsync(ct); return ToDto(delivery); }
+        if ((delivery.DeliveryStatus, status) is not ("Preparing", "Shipped") and not ("Shipped", "Delivered") and not ("Preparing", "Cancelled")) throw Conflict("Chuyển trạng thái giao hàng không hợp lệ");
+        delivery.DeliveryStatus = status; if (status == "Shipped") delivery.ShippedAt ??= DateTime.UtcNow; if (status == "Delivered") delivery.DeliveredAt ??= DateTime.UtcNow; await db.SaveChangesAsync(ct); await tx.CommitAsync(ct); return ToDto(delivery);
     }
 
-    async Task<Dictionary<Guid, int>> ShippedQuantitiesAsync(IEnumerable<Guid> orderItemIds, CancellationToken ct)
-    {
-        var ids = orderItemIds.ToList();
-        return await db.DeliveryItems.Where(x => ids.Contains(x.OrderItemId)).GroupBy(x => x.OrderItemId)
-            .Select(g => new { OrderItemId = g.Key, Quantity = g.Sum(x => x.ShippedQuantity) })
-            .ToDictionaryAsync(x => x.OrderItemId, x => x.Quantity, ct);
-    }
-
-    static OrderDto Map(Order order, IReadOnlyDictionary<Guid, int>? shipped = null) => new(order.Id, order.OrderCode, order.SubTotal, order.DiscountAmount, order.ShippingFee, order.TotalAmount, order.OrderStatus, order.PaymentStatus, order.ShippingAddress, order.CreatedAt,
-        order.Items.Select(i => new OrderLineDto(i.Id, i.ProductId, i.Quantity, i.UnitPrice, i.FinalPrice, shipped is not null && shipped.TryGetValue(i.Id, out var quantity) ? quantity : 0, i.CustomNote, i.ReferenceImageUrl)).ToList());
+    async Task ReleaseReservedAsync(IEnumerable<OrderItem> items, CancellationToken ct) { foreach (var group in items.GroupBy(x => x.ProductId)) { var quantity = group.Sum(x => x.Quantity); var affected = await db.Inventories.Where(x => x.ProductId == group.Key && x.QuantityReserved >= quantity).ExecuteUpdateAsync(x => x.SetProperty(i => i.QuantityAvailable, i => i.QuantityAvailable + quantity).SetProperty(i => i.QuantityReserved, i => i.QuantityReserved - quantity).SetProperty(i => i.LastUpdated, DateTime.UtcNow), ct); if (affected != 1) throw Conflict("Không thể giải phóng tồn kho"); } }
+    async Task<Dictionary<Guid, int>> ShippedQuantitiesAsync(IEnumerable<Guid> ids, CancellationToken ct) => await db.DeliveryItems.Where(x => ids.Contains(x.OrderItemId)).Where(x => db.Deliveries.Any(d => d.Id == x.DeliveryId && d.DeliveryStatus != "Cancelled")).GroupBy(x => x.OrderItemId).Select(g => new { g.Key, Quantity = g.Sum(x => x.ShippedQuantity) }).ToDictionaryAsync(x => x.Key, x => x.Quantity, ct);
+    async Task<Dictionary<Guid, int>> DeliveredQuantitiesAsync(IEnumerable<Guid> ids, CancellationToken ct) => await db.DeliveryItems.Where(x => ids.Contains(x.OrderItemId)).Where(x => db.Deliveries.Any(d => d.Id == x.DeliveryId && d.DeliveryStatus == "Delivered")).GroupBy(x => x.OrderItemId).Select(g => new { g.Key, Quantity = g.Sum(x => x.ShippedQuantity) }).ToDictionaryAsync(x => x.Key, x => x.Quantity, ct);
+    static string Fingerprint(Guid? customerId, CheckoutRequest r) { var canonical = new { customerId, r.ShippingAddress, r.ReceiverName, r.ReceiverPhone, r.ReceiverEmail, r.Note, r.VoucherCode, Items = (r.Items ?? []).Select(x => new { x.ProductId, x.Quantity, x.CustomNote, x.ReferenceImageUrl }).ToList() }; return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(canonical)))); }
+    static OrderDto Map(Order order, IReadOnlyDictionary<Guid, int>? shipped = null) => new(order.Id, order.OrderCode, order.SubTotal, order.DiscountAmount, order.ShippingFee, order.TotalAmount, order.OrderStatus, order.PaymentStatus, order.ShippingAddress, order.CreatedAt, order.Items.Select(i => new OrderLineDto(i.Id, i.ProductId, i.Quantity, i.UnitPrice, i.FinalPrice, shipped is not null && shipped.TryGetValue(i.Id, out var quantity) ? quantity : 0, i.CustomNote, i.ReferenceImageUrl)).ToList());
+    static DeliveryDto ToDto(Delivery d) => new(d.Id, d.DeliveryCode, d.ShipperUnit, d.TrackingNumber, d.DeliveryStatus, d.Items.Select(x => new DeliveryLineDto(x.OrderItemId, x.ShippedQuantity)).ToList());
 
     sealed record Line(Guid ProductId, int Quantity, string? Note, string? Image);
 }

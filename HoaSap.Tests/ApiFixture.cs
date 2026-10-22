@@ -14,6 +14,7 @@ public sealed class ApiFixture : WebApplicationFactory<Program>
     public const string AdminEmail = "qa-admin@example.test";
     public const string AdminPassword = "A-very-long-test-password-123!";
     public const string TestJwtKey = "qa-only-key-with-at-least-32-bytes-123456";
+    internal string? CachedAdminToken { get; set; }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
@@ -69,9 +70,11 @@ public abstract class ApiTestBase(ApiFixture fixture)
 
     protected async Task<string> AdminTokenAsync()
     {
+        if (fixture.CachedAdminToken is { } cached) return cached;
         var response = await Client.PostAsync("/api/auth/login", Json(new { email = ApiFixture.AdminEmail, password = ApiFixture.AdminPassword }));
         response.EnsureSuccessStatusCode();
         using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
-        return document.RootElement.GetProperty("accessToken").GetString()!;
+        fixture.CachedAdminToken = document.RootElement.GetProperty("accessToken").GetString()!;
+        return fixture.CachedAdminToken;
     }
 }

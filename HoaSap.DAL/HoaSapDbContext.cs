@@ -69,6 +69,26 @@ public class HoaSapDbContext : DbContext
         b.Entity<Inventory>().HasIndex(x => x.ProductId).IsUnique();
         b.Entity<WorkshopSession>().HasIndex(x => new { x.WorkshopId, x.SessionDate, x.StartTime }).IsUnique();
 
+        b.Entity<Order>().Property(x => x.IdempotencyKey).HasMaxLength(100);
+        b.Entity<Order>().Property(x => x.RequestFingerprint).HasMaxLength(64);
+        b.Entity<Order>().HasIndex(x => new { x.CustomerId, x.IdempotencyKey }).IsUnique()
+            .HasFilter("[CustomerId] IS NOT NULL AND [IdempotencyKey] IS NOT NULL");
+        b.Entity<Order>().HasIndex(x => x.IdempotencyKey).IsUnique()
+            .HasFilter("[CustomerId] IS NULL AND [IdempotencyKey] IS NOT NULL");
+        b.Entity<WorkshopBooking>().Property(x => x.IdempotencyKey).HasMaxLength(100);
+        b.Entity<WorkshopBooking>().Property(x => x.RequestFingerprint).HasMaxLength(64);
+        b.Entity<WorkshopBooking>().HasIndex(x => new { x.CustomerId, x.IdempotencyKey }).IsUnique()
+            .HasFilter("[CustomerId] IS NOT NULL AND [IdempotencyKey] IS NOT NULL");
+        b.Entity<WorkshopBooking>().HasIndex(x => x.IdempotencyKey).IsUnique()
+            .HasFilter("[CustomerId] IS NULL AND [IdempotencyKey] IS NOT NULL");
+        b.Entity<Payment>().Property(x => x.TransactionCode).HasMaxLength(100);
+        b.Entity<Refund>().Property(x => x.TransactionCode).HasMaxLength(100);
+        b.Entity<Refund>().HasIndex(x => x.TransactionCode).IsUnique().HasFilter("[TransactionCode] IS NOT NULL");
+        b.Entity<Refund>().Property(x => x.ConcurrencyToken).IsConcurrencyToken();
+        b.Entity<Order>().HasIndex(x => new { x.CustomerId, x.CreatedAt });
+        b.Entity<WorkshopBooking>().HasIndex(x => new { x.SessionId, x.BookingStatus });
+        b.Entity<WorkshopBooking>().HasIndex(x => new { x.BookingStatus, x.HoldExpiresAt });
+
         foreach (var t in new[] { typeof(Product), typeof(Voucher), typeof(Order), typeof(OrderItem), typeof(Delivery), typeof(Workshop), typeof(WorkshopBooking), typeof(Payment), typeof(Refund) })
         {
             foreach (var p in b.Entity(t).Metadata.GetProperties().Where(p => p.ClrType == typeof(decimal) || p.ClrType == typeof(decimal?)))

@@ -12,7 +12,9 @@ public sealed class WorkshopsController(WorkshopService service) : ControllerBas
     [HttpPut("{id:guid}"), Authorize(Roles = "Admin,Staff")] public Task<WorkshopDto> Update(Guid id, WorkshopUpsertDto r, CancellationToken ct) => service.UpdateAsync(id, r, ct);
     [HttpDelete("{id:guid}"), Authorize(Roles = "Admin,Staff")] public Task Delete(Guid id, CancellationToken ct) => service.DeleteAsync(id, ct);
     [HttpGet("{id:guid}/sessions")] public Task<IReadOnlyList<SessionDto>> Sessions(Guid id, CancellationToken ct) => service.SessionsAsync(id, User.IsInRole("Admin") || User.IsInRole("Staff"), ct);
+    [HttpGet("sessions/{id:guid}/roster"), Authorize(Roles = "Admin,Staff")] public Task<IReadOnlyList<BookingDto>> Roster(Guid id, CancellationToken ct) => service.SessionRosterAsync(id, ct);
     [HttpPost("{id:guid}/sessions"), Authorize(Roles = "Admin,Staff")] public Task<SessionDto> CreateSession(Guid id, SessionUpsertDto r, CancellationToken ct) => service.CreateSessionAsync(id, r, ct);
     [HttpPut("sessions/{id:guid}"), Authorize(Roles = "Admin,Staff")] public Task<SessionDto> UpdateSession(Guid id, SessionUpsertDto r, CancellationToken ct) => service.UpdateSessionAsync(id, r, ct);
     [HttpDelete("sessions/{id:guid}"), Authorize(Roles = "Admin,Staff")] public Task CancelSession(Guid id, CancellationToken ct) => service.CancelSessionAsync(id, ct);
+    [HttpPost("sessions/{id:guid}/close"), Authorize(Roles = "Admin,Staff")] public Task CloseSession(Guid id, CancellationToken ct) => service.CloseSessionAsync(id, ct);
 }

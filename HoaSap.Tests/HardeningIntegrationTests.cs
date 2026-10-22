@@ -77,7 +77,7 @@ public sealed class HardeningIntegrationTests
         {
             var p = await ProductAsync(admin, stock: 2); using var customer = await CustomerAsync(f); var order = await customer.PostAsync("/api/orders/checkout", Json(new { shippingAddress = "A", items = new[] { new { productId = p.ProductId, quantity = 1 } } })); order.EnsureSuccessStatusCode(); using var d = JsonDocument.Parse(await order.Content.ReadAsStringAsync()); var id = d.RootElement.GetProperty("id").GetGuid();
             Assert.Equal(HttpStatusCode.NoContent, (await admin.PostAsync($"/api/orders/{id}/status", Json(new { status = "Cancelled" }))).StatusCode);
-            Assert.Equal(HttpStatusCode.Conflict, (await admin.PostAsync($"/api/orders/{id}/status", Json(new { status = "Cancelled" }))).StatusCode);
+            Assert.Equal(HttpStatusCode.NoContent, (await admin.PostAsync($"/api/orders/{id}/status", Json(new { status = "Cancelled" }))).StatusCode);
             using var scope = f.Services.CreateScope(); var db = scope.ServiceProvider.GetRequiredService<HoaSapDbContext>(); Assert.Equal(2, (await db.Inventories.SingleAsync(x => x.ProductId == p.ProductId)).QuantityAvailable);
         }
     }

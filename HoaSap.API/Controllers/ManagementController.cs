@@ -33,6 +33,8 @@ public sealed class ManagementController(HoaSapDbContext db) : ControllerBase
     public async Task<Product> Product(AdminProductRequest request, CancellationToken ct)
     {
         if (request.Price < 0 || (request.OriginalPrice is < 0)) throw new BusinessException(400, "Price cannot be negative");
+        if (decimal.Round(request.Price, 2) != request.Price || (request.OriginalPrice is { } original && decimal.Round(original, 2) != original))
+            throw new BusinessException(400, "Price supports at most two decimal places");
         if (!await db.Categories.AnyAsync(x => x.Id == request.CategoryId, ct)) throw new BusinessException(404, "Category not found");
         var code = request.Code.Trim();
         var name = request.Name.Trim();
@@ -99,6 +101,9 @@ public sealed class ManagementController(HoaSapDbContext db) : ControllerBase
         if (request.DiscountType is not ("Percentage" or "FixedAmount") || request.DiscountValue <= 0 || request.MinOrderAmount < 0 || request.MaxDiscountAmount is < 0)
             throw new BusinessException(400, "Voucher discount is invalid");
         if (request.DiscountType == "Percentage" && request.DiscountValue > 100) throw new BusinessException(400, "Percentage must be between 0 and 100");
+        if (decimal.Round(request.DiscountValue, 2) != request.DiscountValue || decimal.Round(request.MinOrderAmount, 2) != request.MinOrderAmount ||
+            (request.MaxDiscountAmount is { } maximum && decimal.Round(maximum, 2) != maximum))
+            throw new BusinessException(400, "Voucher amounts support at most two decimal places");
         if (await db.Vouchers.AnyAsync(x => x.Code == code, ct)) throw new BusinessException(409, "Voucher code exists");
         var voucher = new Voucher { Id = Guid.NewGuid(), Code = code, Description = request.Description?.Trim() ?? "", DiscountType = request.DiscountType, DiscountValue = request.DiscountValue, MinOrderAmount = request.MinOrderAmount, MaxDiscountAmount = request.MaxDiscountAmount, StartDate = request.StartDate, EndDate = request.EndDate, UsageLimit = request.UsageLimit, UsedCount = 0, IsActive = true };
         db.Vouchers.Add(voucher);
