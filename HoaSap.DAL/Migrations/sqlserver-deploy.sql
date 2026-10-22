@@ -777,3 +777,58 @@ GO
 COMMIT;
 GO
 
+BEGIN TRANSACTION;
+GO
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20261022092453_AddAuditLogs'
+)
+BEGIN
+    CREATE TABLE [AuditLogs] (
+        [Id] uniqueidentifier NOT NULL,
+        [EntityType] nvarchar(80) NOT NULL,
+        [EntityId] nvarchar(100) NOT NULL,
+        [Action] nvarchar(20) NOT NULL,
+        [OldValuesJson] nvarchar(max) NOT NULL,
+        [NewValuesJson] nvarchar(max) NOT NULL,
+        [OccurredAtUtc] datetime2 NOT NULL,
+        [ActorId] uniqueidentifier NULL,
+        [ActorRole] nvarchar(40) NULL,
+        [TraceId] nvarchar(200) NULL,
+        CONSTRAINT [PK_AuditLogs] PRIMARY KEY ([Id])
+    );
+END;
+GO
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20261022092453_AddAuditLogs'
+)
+BEGIN
+    CREATE INDEX [IX_AuditLogs_EntityType_EntityId] ON [AuditLogs] ([EntityType], [EntityId]);
+END;
+GO
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20261022092453_AddAuditLogs'
+)
+BEGIN
+    CREATE INDEX [IX_AuditLogs_OccurredAtUtc] ON [AuditLogs] ([OccurredAtUtc]);
+END;
+GO
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20261022092453_AddAuditLogs'
+)
+BEGIN
+    INSERT INTO [__EFMigrationsHistory] ([MigrationId], [ProductVersion])
+    VALUES (N'20261022092453_AddAuditLogs', N'8.0.22');
+END;
+GO
+
+COMMIT;
+GO
+

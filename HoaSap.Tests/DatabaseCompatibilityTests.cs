@@ -31,6 +31,8 @@ public sealed class DatabaseCompatibilityTests
         Assert.Contains("CK_Session_Capacity", script);
         Assert.Contains("CK_Payment_Amount", script);
         Assert.Contains("IX_Refunds_TransactionCode", script);
+        Assert.Contains("AddAuditLogs", script);
+        Assert.Contains("CREATE TABLE [AuditLogs]", script);
     }
 
     [SqlServerFact]
@@ -50,6 +52,8 @@ public sealed class DatabaseCompatibilityTests
             Assert.True(await db.Database.CanConnectAsync());
             var applied = await db.Database.GetAppliedMigrationsAsync();
             Assert.Contains(applied, migration => migration.Contains("InitialProduction", StringComparison.Ordinal));
+            Assert.Contains(applied, migration => migration.Contains("AddAuditLogs", StringComparison.Ordinal));
+            Assert.Equal(0, await db.AuditLogs.CountAsync());
         }
         finally
         {

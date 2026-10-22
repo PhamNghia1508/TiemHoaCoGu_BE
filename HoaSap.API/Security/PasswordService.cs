@@ -5,6 +5,13 @@ namespace HoaSap.API.Security;
 public static class PasswordService
 {
     private const int Iterations = 210_000;
+    public const string PolicyMessage = "Mật khẩu phải dài 10-128 ký tự và chứa chữ hoa, chữ thường, chữ số và ký tự đặc biệt.";
+
+    public static bool IsValid(string? password) =>
+        password is not null && password.Length is >= 10 and <= 128 &&
+        password.Any(char.IsUpper) && password.Any(char.IsLower) &&
+        password.Any(char.IsDigit) && password.Any(ch => !char.IsLetterOrDigit(ch));
+
     public static string Hash(string password)
     {
         var salt = RandomNumberGenerator.GetBytes(16);

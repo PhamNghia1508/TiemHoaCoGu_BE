@@ -2,9 +2,12 @@ name: dotnet
 on:
   push:
   pull_request:
+permissions:
+  contents: read
 jobs:
   build-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     services:
       sqlserver:
         image: mcr.microsoft.com/mssql/server:2022-latest
@@ -25,6 +28,12 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
-      - run: dotnet restore HoaSap.API/HoaSap.API.csproj
-      - run: dotnet build HoaSap.API/HoaSap.API.csproj -c Release --no-restore
-      - run: dotnet test HoaSap.Tests/HoaSap.Tests.csproj -c Release
+      - run: dotnet restore HoaSap.sln
+      - run: dotnet build HoaSap.sln -c Release --no-restore
+      - run: dotnet test HoaSap.Tests/HoaSap.Tests.csproj -c Release --no-build --logger "trx;LogFileName=ci-results.trx" --results-directory artifacts/test-results
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: artifacts/test-results
+          if-no-files-found: warn

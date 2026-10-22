@@ -8,6 +8,7 @@ using HoaSap.API.Services;
 using HoaSap.BLL.Commerce;
 using HoaSap.BLL.Workshops;
 using HoaSap.DAL;
+using HoaSap.DAL.Auditing;
 using HoaSap.Domain.Entities;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.RateLimiting;
@@ -32,6 +33,8 @@ if (string.IsNullOrWhiteSpace(key))
     builder.Configuration["Jwt:Key"] = key;
 }
 if (Encoding.UTF8.GetByteCount(key) < 32) throw new InvalidOperationException("Jwt key must be at least 32 bytes.");
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddScoped<IAuditActor, HttpAuditActor>();
 builder.Services.AddDbContext<HoaSapDbContext>(options =>
 {
     var provider = builder.Configuration["Database:Provider"] ?? "Sqlite";
@@ -72,22 +75,42 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJw
             if (!Guid.TryParse(context.Principal?.FindFirstValue(ClaimTypes.NameIdentifier), out var id)) { context.Fail("Invalid subject"); return; }
             var db = context.HttpContext.RequestServices.GetRequiredService<HoaSapDbContext>();
             var user = await db.Customers.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id && !x.IsGuest);
-            if (user is null || user.Role != context.Principal?.FindFirstValue(ClaimTypes.Role)) context.Fail("Account or role no longer valid");
+            var presentedStamp = context.Principal?.FindFirstValue(SecurityStampService.ClaimType);
+            var key = builder.Configuration["Jwt:Key"]!;
+            if (user is null || user.Role != context.Principal?.FindFirstValue(ClaimTypes.Role) ||
+                !SecurityStampService.Matches(presentedStamp, user.PasswordHash, key))
+                context.Fail("Account, role, or security stamp no longer valid");
         }
     };
 });
 builder.Services.AddAuthorization();
 var origins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ?? [];
-builder.Services.AddCors(o => o.AddDefaultPolicy(p => { if (origins.Length > 0) p.WithOrigins(origins).AllowAnyHeader().AllowAnyMethod(); }));
+builder.Services.AddCors(o => o.AddDefaultPolicy(p => { if (origins.Length > 0) p.WithOrigins(origins).AllowAnyHeader().AllowAnyMethod().WithExposedHeaders("X-Request-ID", "Retry-After"); }));
 builder.Services.AddRateLimiter(o =>
 {
+    var authPermitLimit = builder.Configuration.GetValue("RateLimiting:AuthPermitLimit", 15);
+    if (authPermitLimit is < 1 or > 10000) throw new InvalidOperationException("RateLimiting:AuthPermitLimit must be between 1 and 10000.");
     o.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    o.OnRejected = async (rejected, ct) =>
+    {
+        var response = rejected.HttpContext.Response;
+        if (rejected.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfter))
+            response.Headers.RetryAfter = Math.Max(1, (int)Math.Ceiling(retryAfter.TotalSeconds)).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        await response.WriteAsJsonAsync(new Microsoft.AspNetCore.Mvc.ProblemDetails
+        {
+            Status = StatusCodes.Status429TooManyRequests,
+            Title = "Quá nhiều yêu cầu. Vui lòng thử lại sau.",
+            Instance = rejected.HttpContext.Request.Path,
+            Extensions = { ["traceId"] = rejected.HttpContext.TraceIdentifier }
+        }, options: null, contentType: "application/problem+json", cancellationToken: ct);
+    };
     o.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(ctx => RateLimitPartition.GetFixedWindowLimiter(
         ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown", _ => new FixedWindowRateLimiterOptions { PermitLimit = 300, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
     o.AddPolicy("auth", ctx => RateLimitPartition.GetFixedWindowLimiter(ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
-        _ => new FixedWindowRateLimiterOptions { PermitLimit = 15, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
+        _ => new FixedWindowRateLimiterOptions { PermitLimit = authPermitLimit, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
 });
 var app = builder.Build();
+app.UseMiddleware<RequestDiagnosticsMiddleware>();
 app.UseMiddleware<ExceptionMiddleware>();
 if (isDev) { app.UseSwagger(); app.UseSwaggerUI(); }
 else { app.UseHsts(); app.UseHttpsRedirection(); }
@@ -104,6 +127,7 @@ app.MapGet("/health/ready", async (HoaSapDbContext db, CancellationToken ct) =>
         // Query a mapped table as well as opening a connection: an empty database is not ready.
         await db.Orders.AsNoTracking().Select(x => x.Id).Take(1).ToListAsync(ct);
         await db.Refunds.AsNoTracking().Select(x => new { x.TransactionCode, x.RequestedAt }).Take(1).ToListAsync(ct);
+        await db.AuditLogs.AsNoTracking().Select(x => new { x.EntityType, x.OccurredAtUtc }).Take(1).ToListAsync(ct);
         return Results.Ok(new { status = "ready" });
     }
     catch (Exception) when (!ct.IsCancellationRequested)

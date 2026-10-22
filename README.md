@@ -33,6 +33,8 @@ Tài liệu schema/request chi tiết nằm trong Swagger sinh trực tiếp t�
 | Nhóm | Endpoint tiêu biểu | Quyền |
 |---|---|---|
 | Tài khoản | `POST /api/auth/register`, `POST /api/auth/login`, `GET /api/auth/me` | Public / tài khoản |
+| Đổi mật khẩu | `POST /api/auth/change-password` | Tài khoản đang đăng nhập |
+| Nhật ký nghiệp vụ | `GET /api/management/audit-logs` | Chỉ Admin |
 | Catalog | `GET /api/catalog/categories`, `GET /api/catalog/products`, `GET /api/catalog/products/{id}` | Public |
 | Sổ địa chỉ | `GET/POST /api/addresses`, `PUT/DELETE /api/addresses/{id}` | Chủ tài khoản |
 | Giỏ hàng | `/api/cart` | Chủ tài khoản |
@@ -69,6 +71,16 @@ Với workshop, lần đầu phải đủ cọc; phần còn lại phải đư�
 
 **Thanh toán:** Chỉ hỗ trợ **ghi nhận thủ công** `Cash` hoặc `BankTransfer` bởi nhân viên đã kiểm tra tiền thực tế. Endpoint không thực hiện chuyển tiền, không kết nối VNPay/MoMo/BankingQR, không tự xác minh giao dịch ngân hàng. `transactionCode` là khóa chống ghi nhận lặp. Ghi nhận refund cũng chỉ là sổ sách, không tự hoàn tiền ra ngân hàng.
 
+## Bảo mật tài khoản và truy vết
+
+Đổi mật khẩu gửi `{ "currentPassword": "...", "newPassword": "...", "confirmNewPassword": "..." }`. Mật khẩu mới phải khác mật khẩu cũ, dài 10–128 ký tự và có chữ hoa, chữ thường, chữ số, ký tự đặc biệt. Thành công trả `204`, sau đó phải đăng nhập lại. JWT gắn security stamp HMAC từ password hash; tất cả token cũ của tài khoản bị từ chối sau đổi mật khẩu. Cập nhật password dùng compare-and-swap để không ghi đè thay đổi đồng thời. Không thêm cột mật khẩu hoặc lưu token thô. **Token phát hành trước bản nâng cấp này không có stamp nên cũng cần đăng nhập lại một lần.** Chưa có quên mật khẩu hoặc refresh token.
+
+Audit log ghi các trường nghiệp vụ theo allowlist của Product, Inventory, Voucher, Order, Delivery, WorkshopSession, WorkshopBooking, Payment và Refund khi lưu qua EF ChangeTracker. Mỗi bản ghi có entity/id, thao tác, giá trị trước/sau, giờ UTC, actor/role và trace ID; được lưu cùng transaction với dữ liệu nghiệp vụ. Không snapshot toàn bộ object; loại mật khẩu, thông tin liên hệ/địa chỉ khách, ghi chú và nội dung phản hồi cổng thanh toán. Tác vụ nền/khách vãng lai có thể không có actor ID. Không cho sửa/xóa audit qua SaveChanges, nhưng đây **không phải kho nhật ký chống can thiệp ở mức database**; cần giới hạn quyền DB và chính sách lưu trữ riêng.
+
+Admin tra cứu `GET /api/management/audit-logs?entityType=Order&entityId=<guid>&actorId=<guid>&page=1&pageSize=50`; `pageSize` tối đa 100. Bộ lọc `from`/`to` nên truyền ISO-8601 có múi giờ, ví dụ `2026-10-22T00:00:00Z`. **ExecuteUpdate/ExecuteDelete và SQL trực tiếp không đi qua ChangeTracker:** các cập nhật giữ/nhả kho và tăng lượt voucher bằng bulk update hiện chưa có audit snapshot riêng; log trạng thái đơn/booking không thay thế sổ biến động kho đầy đủ.
+
+Response có `X-Request-ID` do server sinh; ProblemDetails của lỗi nghiệp vụ và rate limit có `traceId` tương ứng. Log request chỉ ghi method, route template, status và thời gian xử lý, không ghi body/query string/token. Khi bị giới hạn tốc độ, trả `429 application/problem+json` và `Retry-After` nếu limiter cung cấp thời gian chờ. Mặc định auth vẫn 15 request/phút/IP, toàn API 300/phút/IP; có thể đặt `RateLimiting__AuthPermitLimit` từ 1–10000, cần chọn mức phù hợp trước khi triển khai. Các test chức năng dùng hạn mức auth riêng để không ảnh hưởng lẫn nhau; test rate limit dùng đúng mức 15. Limiter vẫn nằm trong bộ nhớ từng instance, chưa phải limiter phân tán; reverse proxy cần cấu hình IP tin cậy riêng trước khi chạy nhiều người dùng.
+
 ## Cơ sở dữ liệu và triển khai
 
 SQL Server 2022 Development có compose tại `TaiNguyen/docker-compose.db.yml`; yêu cầu tự đặt `MSSQL_SA_PASSWORD`, cổng chỉ bind localhost. Cấu hình API:
@@ -90,13 +102,15 @@ dotnet ef database update --project HoaSap.DAL --startup-project HoaSap.DAL
 
 Factory ưu tiên `HOASAP_SQLSERVER_CONNECTION`, sau đó `ConnectionStrings__DefaultConnection`; cũng có thể truyền `--connection` bằng secret của môi trường triển khai. Review script trước khi áp dụng; ứng dụng không tự chạy migration lúc khởi động. Production từ chối `Database__Initialize=true` hoặc `Database__Seed=true`; bắt buộc có `Jwt__Key`, database đã chuẩn bị, HTTPS/reverse proxy cấu hình đúng và CORS allowlist bằng `Cors__AllowedOrigins__0`… Swagger chỉ mở trong Development. Giới hạn body mặc định 1 MiB.
 
+Migration mới `20261022092453_AddAuditLogs` bổ sung bảng/index audit. Với database SQL Server đã áp dụng `InitialProduction` và có lịch sử EF hợp lệ, sao lưu, review script rồi áp dụng migration mới **trước khi** chạy API bản này. Readiness kiểm tra thêm bảng AuditLogs và trả 503 nếu thiếu. SQLite cũ vẫn không được tự nâng cấp bởi EnsureCreated; không xóa dữ liệu thật để cập nhật schema.
+
 ```bash
 dotnet build HoaSap.sln -c Release
 dotnet test HoaSap.Tests/HoaSap.Tests.csproj -c Release
 docker build -t hoasap-api .
 ```
 
-Lần QA của bản bổ sung đơn hàng/workshop: **51 test đạt, 0 lỗi, 1 test SQL Server thực bị bỏ qua**; Release build 0 cảnh báo/0 lỗi. Có test giữ món hàng/chỗ cuối cùng đồng thời, checkout/booking replay, phân quyền chủ dữ liệu, hoàn tất giao hàng, hủy/nhả kho, cọc/check-in và duyệt/ghi nhận hoàn tiền. Đây là kiểm thử chức năng, không phải kiểm thử tải hoặc xác nhận SQL Server thực.
+Lần QA của bản bổ sung bảo mật/audit: **63 test đạt, 0 lỗi, 1 test SQL Server thực bị bỏ qua**. Có test giữ món hàng/chỗ cuối cùng đồng thời, checkout/booking replay, phân quyền chủ dữ liệu, hoàn tất giao hàng, hủy/nhả kho, cọc/check-in, duyệt/ghi nhận hoàn tiền; thêm đổi mật khẩu/thu hồi token, whitelist và rollback audit, phân quyền/lọc audit, request ID và 429/Retry-After. Đây là kiểm thử chức năng, không phải kiểm thử tải hoặc xác nhận SQL Server thực.
 
 Dockerfile chỉ đóng gói API; không kèm secrets/database. CI GitHub Actions build/test .NET 8 và khai báo SQL Server 2022 service. Kiểm thử SQL Server opt-in qua `HOASAP_TEST_SQLSERVER`: tạo database tên GUID riêng, áp dụng migration và xóa database test khi kết thúc; chỉ dùng tài khoản/máy chủ test có quyền tạo/xóa database. Nếu thiếu biến này, test SQL Server được đánh dấu **Skipped**, không tính là đã kiểm chứng SQL Server. Các test API còn lại dùng SQLite. Cấu hình CI mới chưa được xác nhận chạy thành công trên GitHub khi chưa push.
 
@@ -110,4 +124,4 @@ Dockerfile chỉ đóng gói API; không kèm secrets/database. CI GitHub Action
 
 Hai điều chỉnh so với sơ đồ ban đầu: `Category.Id` dùng GUID thay vì số nguyên; đơn/vé khách vãng lai có thể để `CustomerId` null và lưu snapshot thông tin đặt chỗ/giao nhận, không tự liên kết vào tài khoản đăng ký chỉ vì trùng số điện thoại. Giúp tránh gán nhầm dữ liệu riêng của khách.
 
-Backend đã được củng cố cho các luồng đơn hàng/workshop, nhưng **chưa được chứng nhận sẵn sàng vận hành bán hàng thật**. Chưa có frontend, upload ảnh/media storage, email/SMS, quên mật khẩu/refresh token, điều chỉnh giá custom có lịch sử duyệt, tích hợp vận chuyển/cổng thanh toán, chính sách hoàn tiền tự động, audit log đầy đủ hoặc kiểm thử tải. Chưa có tự hết hạn đơn hàng chưa trả tiền; nhân viên cần kiểm tra và hủy đơn bỏ dở để nhả kho. Lượt voucher đã dùng không tự phục hồi khi hủy/hoàn; cần chốt chính sách trước khi thay đổi. Các trường hình ảnh/diễn giả có trong model nhưng chưa có toàn bộ CRUD riêng. SQL Server thực tế, migration/backup/restore và tải đồng thời trên hạ tầng triển khai vẫn là các bước kiểm chứng bắt buộc; không coi test sinh schema SQL là test SQL Server thực.
+Backend đã được củng cố cho các luồng đơn hàng/workshop, nhưng **chưa được chứng nhận sẵn sàng vận hành bán hàng thật**. Chưa có frontend, upload ảnh/media storage, email/SMS, quên mật khẩu/refresh token, điều chỉnh giá custom có lịch sử duyệt, tích hợp vận chuyển/cổng thanh toán, chính sách hoàn tiền tự động, audit cho mọi đường ghi dữ liệu hoặc kiểm thử tải. Chưa có tự hết hạn đơn hàng chưa trả tiền; nhân viên cần kiểm tra và hủy đơn bỏ dở để nhả kho. Lượt voucher đã dùng không tự phục hồi khi hủy/hoàn; cần chốt chính sách trước khi thay đổi. Các trường hình ảnh/diễn giả có trong model nhưng chưa có toàn bộ CRUD riêng. SQL Server thực tế, migration/backup/restore và tải đồng thời trên hạ tầng triển khai vẫn là các bước kiểm chứng bắt buộc; không coi test sinh schema SQL là test SQL Server thực.

@@ -1,11 +1,14 @@
+using HoaSap.Domain;
 using HoaSap.Domain.Entities;
+using HoaSap.DAL.Auditing;
 using Microsoft.EntityFrameworkCore;
 
 namespace HoaSap.DAL;
 
 public class HoaSapDbContext : DbContext
 {
-    public HoaSapDbContext(DbContextOptions<HoaSapDbContext> options) : base(options) { }
+    public HoaSapDbContext(DbContextOptions<HoaSapDbContext> options, IAuditActor? auditActor = null) : base(options) => AuditActor = auditActor;
+    private IAuditActor? AuditActor { get; }
     public DbSet<Customer> Customers => Set<Customer>();
     public DbSet<Address> Addresses => Set<Address>();
     public DbSet<Category> Categories => Set<Category>();
@@ -25,6 +28,7 @@ public class HoaSapDbContext : DbContext
     public DbSet<WorkshopBooking> WorkshopBookings => Set<WorkshopBooking>();
     public DbSet<Payment> Payments => Set<Payment>();
     public DbSet<Refund> Refunds => Set<Refund>();
+    public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
 
     private void UpdateConcurrencyTokens()
     {
@@ -38,22 +42,37 @@ public class HoaSapDbContext : DbContext
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
         UpdateConcurrencyTokens();
-        return base.SaveChanges(acceptAllChangesOnSuccess);
+        var logs = AuditRecorder.Capture(ChangeTracker, AuditActor);
+        AuditLogs.AddRange(logs);
+        try { return base.SaveChanges(acceptAllChangesOnSuccess); }
+        catch { foreach (var log in logs) Entry(log).State = EntityState.Detached; throw; }
     }
 
-    public override Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
+    public override async Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
     {
         UpdateConcurrencyTokens();
-        return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+        var logs = AuditRecorder.Capture(ChangeTracker, AuditActor);
+        await AuditLogs.AddRangeAsync(logs, cancellationToken);
+        try { return await base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken); }
+        catch { foreach (var log in logs) Entry(log).State = EntityState.Detached; throw; }
     }
 
     protected override void OnModelCreating(ModelBuilder b)
     {
         base.OnModelCreating(b);
-        foreach (var t in new[] { typeof(Customer), typeof(Address), typeof(Category), typeof(Product), typeof(ProductImage), typeof(Inventory), typeof(ShoppingCartItem), typeof(Voucher), typeof(Order), typeof(OrderItem), typeof(Delivery), typeof(DeliveryItem), typeof(Instructor), typeof(Workshop), typeof(WorkshopImage), typeof(WorkshopSession), typeof(WorkshopBooking), typeof(Payment), typeof(Refund) })
+        foreach (var t in new[] { typeof(Customer), typeof(Address), typeof(Category), typeof(Product), typeof(ProductImage), typeof(Inventory), typeof(ShoppingCartItem), typeof(Voucher), typeof(Order), typeof(OrderItem), typeof(Delivery), typeof(DeliveryItem), typeof(Instructor), typeof(Workshop), typeof(WorkshopImage), typeof(WorkshopSession), typeof(WorkshopBooking), typeof(Payment), typeof(Refund), typeof(AuditLog) })
             b.Entity(t).Property<Guid>("Id").ValueGeneratedNever();
 
+        b.Entity<AuditLog>().HasIndex(x => new { x.EntityType, x.EntityId });
+        b.Entity<AuditLog>().HasIndex(x => x.OccurredAtUtc);
+        b.Entity<AuditLog>().Property(x => x.EntityType).HasMaxLength(80);
+        b.Entity<AuditLog>().Property(x => x.EntityId).HasMaxLength(100);
+        b.Entity<AuditLog>().Property(x => x.Action).HasMaxLength(20);
+        b.Entity<AuditLog>().Property(x => x.ActorRole).HasMaxLength(40);
+        b.Entity<AuditLog>().Property(x => x.TraceId).HasMaxLength(200);
+
         b.Entity<Customer>().HasIndex(x => x.PhoneNumber);
+
         b.Entity<Customer>().HasIndex(x => x.Email).IsUnique();
         b.Entity<Category>().HasIndex(x => x.Code).IsUnique();
         b.Entity<Product>().HasIndex(x => x.Code).IsUnique();

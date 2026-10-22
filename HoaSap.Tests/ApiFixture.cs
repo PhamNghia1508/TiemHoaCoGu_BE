@@ -11,6 +11,9 @@ namespace HoaSap.Tests;
 public sealed class ApiFixture : WebApplicationFactory<Program>
 {
     private readonly string _dbPath = Path.Combine(Path.GetTempPath(), $"hoasap-tests-{Guid.NewGuid():N}.db");
+    private readonly int _authPermitLimit;
+    public ApiFixture() : this(1000) { }
+    internal ApiFixture(int authPermitLimit) => _authPermitLimit = authPermitLimit;
     public const string AdminEmail = "qa-admin@example.test";
     public const string AdminPassword = "A-very-long-test-password-123!";
     public const string TestJwtKey = "qa-only-key-with-at-least-32-bytes-123456";
@@ -25,6 +28,7 @@ public sealed class ApiFixture : WebApplicationFactory<Program>
             ["ConnectionStrings:DefaultConnection"] = $"Data Source={_dbPath}",
             ["Database:Initialize"] = "true",
             ["Database:Seed"] = "false",
+            ["RateLimiting:AuthPermitLimit"] = _authPermitLimit.ToString(System.Globalization.CultureInfo.InvariantCulture),
             ["Jwt:Key"] = TestJwtKey,
             ["Jwt:Issuer"] = "qa-tests",
             ["Jwt:Audience"] = "qa-tests",

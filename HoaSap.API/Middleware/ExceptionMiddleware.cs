@@ -11,6 +11,11 @@ public sealed class ExceptionMiddleware(RequestDelegate next, ILogger<ExceptionM
     public async Task InvokeAsync(HttpContext context)
     {
         try { await next(context); }
+        catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
+        {
+            // The caller disconnected; do not fabricate an internal error or write to a closed response.
+            if (!context.Response.HasStarted) context.Response.StatusCode = 499;
+        }
         catch (Exception ex)
         {
             if (context.Response.HasStarted) throw;
@@ -33,7 +38,7 @@ public sealed class ExceptionMiddleware(RequestDelegate next, ILogger<ExceptionM
                 Title = detail,
                 Instance = context.Request.Path,
                 Extensions = { ["traceId"] = context.TraceIdentifier }
-            });
+            }, options: null, contentType: "application/problem+json", cancellationToken: context.RequestAborted);
         }
     }
 }
