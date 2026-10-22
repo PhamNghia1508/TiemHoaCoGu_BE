@@ -50,6 +50,37 @@ internal static class AuditRecorder
         return result;
     }
 
+    // Bulk ExecuteUpdate does not create ChangeTracker entries. Capture both
+    // materialized snapshots explicitly so the audit row is written by the
+    // caller's SaveChanges/transaction, not by a second connection or commit.
+    public static void EnsureConfigured<TEntity>()
+    {
+        if (!Fields.ContainsKey(typeof(TEntity)))
+            throw new InvalidOperationException($"Auditing is not configured for {typeof(TEntity).Name}.");
+    }
+
+    public static AuditLog FromSnapshots<TEntity>(TEntity oldValue, TEntity newValue, IAuditActor? actor)
+    {
+        if (!Fields.TryGetValue(typeof(TEntity), out var fields))
+            throw new InvalidOperationException($"Auditing is not configured for {typeof(TEntity).Name}.");
+
+        var oldValues = fields.ToDictionary(f => f, f => typeof(TEntity).GetProperty(f)?.GetValue(oldValue));
+        var newValues = fields.ToDictionary(f => f, f => typeof(TEntity).GetProperty(f)?.GetValue(newValue));
+        var id = typeof(TEntity).GetProperty("Id")?.GetValue(newValue ?? oldValue);
+        return new AuditLog
+        {
+            EntityType = typeof(TEntity).Name,
+            EntityId = Convert.ToString(id) ?? "",
+            Action = EntityState.Modified.ToString(),
+            OldValuesJson = JsonSerializer.Serialize(oldValues, JsonOptions),
+            NewValuesJson = JsonSerializer.Serialize(newValues, JsonOptions),
+            OccurredAtUtc = DateTime.UtcNow,
+            ActorId = actor?.ActorId,
+            ActorRole = actor?.Role,
+            TraceId = actor?.TraceId
+        };
+    }
+
     private static Dictionary<string, object?> Values(EntityEntry entry, IEnumerable<string> fields, bool current)
         => fields.ToDictionary(f => f, f => (current ? entry.Property(f).CurrentValue : entry.Property(f).OriginalValue));
 }

@@ -130,8 +130,13 @@ public sealed class RefundService(HoaSapDbContext db)
         foreach (var group in items.GroupBy(x => x.ProductId))
         {
             var quantity = group.Sum(x => x.Quantity);
-            var affected = await db.Inventories.Where(x => x.ProductId == group.Key && x.QuantityReserved >= quantity)
-                .ExecuteUpdateAsync(x => x.SetProperty(i => i.QuantityAvailable, i => i.QuantityAvailable + quantity).SetProperty(i => i.QuantityReserved, i => i.QuantityReserved - quantity).SetProperty(i => i.LastUpdated, DateTime.UtcNow), ct);
+            var inventoryToken = Guid.NewGuid();
+            var affected = await db.ExecuteUpdateAuditedAsync(
+                db.Inventories.Where(x => x.ProductId == group.Key && x.QuantityReserved >= quantity),
+                x => x.SetProperty(i => i.QuantityAvailable, i => i.QuantityAvailable + quantity)
+                    .SetProperty(i => i.QuantityReserved, i => i.QuantityReserved - quantity)
+                    .SetProperty(i => i.LastUpdated, DateTime.UtcNow)
+                    .SetProperty(i => i.ConcurrencyToken, inventoryToken), ct);
             if (affected != 1) throw new BusinessException(409, "Không thể giải phóng tồn kho cho order.");
         }
     }

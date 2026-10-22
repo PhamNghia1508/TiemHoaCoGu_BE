@@ -191,21 +191,29 @@ public sealed class CommerceService(HoaSapDbContext db)
             var product = products[line.ProductId];
             if (product.IsPreOrder) throw Conflict("Sản phẩm đặt trước chưa hỗ trợ MVP");
             if (!product.IsCustomizable && (!string.IsNullOrWhiteSpace(line.Note) || !string.IsNullOrWhiteSpace(line.Image))) throw Bad("Sản phẩm không cho phép tùy chỉnh");
-            var affected = await db.Inventories.Where(i => i.ProductId == line.ProductId && i.QuantityAvailable >= line.Quantity)
-                .ExecuteUpdateAsync(x => x.SetProperty(i => i.QuantityAvailable, i => i.QuantityAvailable - line.Quantity).SetProperty(i => i.QuantityReserved, i => i.QuantityReserved + line.Quantity).SetProperty(i => i.LastUpdated, DateTime.UtcNow), ct);
+            var inventoryToken = Guid.NewGuid();
+            var affected = await db.ExecuteUpdateAuditedAsync(
+                db.Inventories.Where(i => i.ProductId == line.ProductId && i.QuantityAvailable >= line.Quantity),
+                x => x.SetProperty(i => i.QuantityAvailable, i => i.QuantityAvailable - line.Quantity)
+                    .SetProperty(i => i.QuantityReserved, i => i.QuantityReserved + line.Quantity)
+                    .SetProperty(i => i.LastUpdated, DateTime.UtcNow)
+                    .SetProperty(i => i.ConcurrencyToken, inventoryToken), ct);
             if (affected != 1) throw Conflict("Tồn kho vừa thay đổi, vui lòng thử lại");
             subtotal += product.Price * line.Quantity;
         }
         decimal discount = 0; Voucher? voucher = null;
         if (!string.IsNullOrWhiteSpace(request.VoucherCode))
         {
-            voucher = await db.Vouchers.SingleOrDefaultAsync(x => x.Code == request.VoucherCode.Trim() && x.IsActive, ct) ?? throw Bad("Voucher không hợp lệ");
+            voucher = await db.Vouchers.AsNoTracking().SingleOrDefaultAsync(x => x.Code == request.VoucherCode.Trim() && x.IsActive, ct) ?? throw Bad("Voucher không hợp lệ");
             var now = DateTime.UtcNow;
             if (now < voucher.StartDate || now > voucher.EndDate || voucher.UsedCount >= voucher.UsageLimit || subtotal < voucher.MinOrderAmount) throw Bad("Voucher không đủ điều kiện");
             discount = voucher.DiscountType == "Percentage" ? subtotal * voucher.DiscountValue / 100m : voucher.DiscountValue;
             if (voucher.MaxDiscountAmount is { } maximum) discount = Math.Min(discount, maximum);
             discount = Math.Round(Math.Min(discount, subtotal), 0, MidpointRounding.AwayFromZero);
-            if (await db.Vouchers.Where(v => v.Id == voucher.Id && v.IsActive && v.UsedCount < v.UsageLimit).ExecuteUpdateAsync(x => x.SetProperty(v => v.UsedCount, v => v.UsedCount + 1), ct) != 1) throw Conflict("Voucher vừa hết lượt sử dụng");
+            if (await db.ExecuteUpdateAuditedAsync(
+                    db.Vouchers.Where(v => v.Id == voucher.Id && v.IsActive && v.UsedCount < v.UsageLimit),
+                    x => x.SetProperty(v => v.UsedCount, v => v.UsedCount + 1), ct) != 1)
+                throw Conflict("Voucher vừa hết lượt sử dụng");
         }
         var customer = customerId is { } buyerId ? await db.Customers.AsNoTracking().SingleOrDefaultAsync(x => x.Id == buyerId, ct) : null;
         var address = $"ReceiverName: {(request.ReceiverName ?? customer?.FullName ?? "")}; ReceiverPhone: {(request.ReceiverPhone ?? customer?.PhoneNumber ?? "")}; ReceiverEmail: {(request.ReceiverEmail ?? customer?.Email ?? "")}; Address: {request.ShippingAddress.Trim()}";
@@ -271,7 +279,17 @@ public sealed class CommerceService(HoaSapDbContext db)
             if (order.PaymentStatus != "Paid") throw Conflict("Chỉ hoàn tất đơn đã thanh toán");
             var shipped = await DeliveredQuantitiesAsync(order.Items.Select(i => i.Id), ct);
             if (order.Items.Any(i => !shipped.TryGetValue(i.Id, out var quantity) || quantity < i.Quantity)) throw Conflict("Chưa giao đủ tất cả sản phẩm");
-            foreach (var group in order.Items.GroupBy(i => i.ProductId)) { var quantity = group.Sum(i => i.Quantity); var affected = await db.Inventories.Where(i => i.ProductId == group.Key && i.QuantityReserved >= quantity).ExecuteUpdateAsync(x => x.SetProperty(i => i.QuantityReserved, i => i.QuantityReserved - quantity).SetProperty(i => i.LastUpdated, DateTime.UtcNow), ct); if (affected != 1) throw Conflict("Không thể trừ tồn kho đã giữ"); }
+            foreach (var group in order.Items.GroupBy(i => i.ProductId))
+            {
+                var quantity = group.Sum(i => i.Quantity);
+                var inventoryToken = Guid.NewGuid();
+                var affected = await db.ExecuteUpdateAuditedAsync(
+                    db.Inventories.Where(i => i.ProductId == group.Key && i.QuantityReserved >= quantity),
+                    x => x.SetProperty(i => i.QuantityReserved, i => i.QuantityReserved - quantity)
+                        .SetProperty(i => i.LastUpdated, DateTime.UtcNow)
+                        .SetProperty(i => i.ConcurrencyToken, inventoryToken), ct);
+                if (affected != 1) throw Conflict("Không thể trừ tồn kho đã giữ");
+            }
         }
         order.OrderStatus = status; await db.SaveChangesAsync(ct); await transaction.CommitAsync(ct);
     }
@@ -303,7 +321,21 @@ public sealed class CommerceService(HoaSapDbContext db)
         delivery.DeliveryStatus = status; if (status == "Shipped") delivery.ShippedAt ??= DateTime.UtcNow; if (status == "Delivered") delivery.DeliveredAt ??= DateTime.UtcNow; await db.SaveChangesAsync(ct); await tx.CommitAsync(ct); return ToDto(delivery);
     }
 
-    async Task ReleaseReservedAsync(IEnumerable<OrderItem> items, CancellationToken ct) { foreach (var group in items.GroupBy(x => x.ProductId)) { var quantity = group.Sum(x => x.Quantity); var affected = await db.Inventories.Where(x => x.ProductId == group.Key && x.QuantityReserved >= quantity).ExecuteUpdateAsync(x => x.SetProperty(i => i.QuantityAvailable, i => i.QuantityAvailable + quantity).SetProperty(i => i.QuantityReserved, i => i.QuantityReserved - quantity).SetProperty(i => i.LastUpdated, DateTime.UtcNow), ct); if (affected != 1) throw Conflict("Không thể giải phóng tồn kho"); } }
+    async Task ReleaseReservedAsync(IEnumerable<OrderItem> items, CancellationToken ct)
+    {
+        foreach (var group in items.GroupBy(x => x.ProductId))
+        {
+            var quantity = group.Sum(x => x.Quantity);
+            var inventoryToken = Guid.NewGuid();
+            var affected = await db.ExecuteUpdateAuditedAsync(
+                db.Inventories.Where(x => x.ProductId == group.Key && x.QuantityReserved >= quantity),
+                x => x.SetProperty(i => i.QuantityAvailable, i => i.QuantityAvailable + quantity)
+                    .SetProperty(i => i.QuantityReserved, i => i.QuantityReserved - quantity)
+                    .SetProperty(i => i.LastUpdated, DateTime.UtcNow)
+                    .SetProperty(i => i.ConcurrencyToken, inventoryToken), ct);
+            if (affected != 1) throw Conflict("Không thể giải phóng tồn kho");
+        }
+    }
     async Task<Dictionary<Guid, int>> ShippedQuantitiesAsync(IEnumerable<Guid> ids, CancellationToken ct) => await db.DeliveryItems.Where(x => ids.Contains(x.OrderItemId)).Where(x => db.Deliveries.Any(d => d.Id == x.DeliveryId && d.DeliveryStatus != "Cancelled")).GroupBy(x => x.OrderItemId).Select(g => new { g.Key, Quantity = g.Sum(x => x.ShippedQuantity) }).ToDictionaryAsync(x => x.Key, x => x.Quantity, ct);
     async Task<Dictionary<Guid, int>> DeliveredQuantitiesAsync(IEnumerable<Guid> ids, CancellationToken ct) => await db.DeliveryItems.Where(x => ids.Contains(x.OrderItemId)).Where(x => db.Deliveries.Any(d => d.Id == x.DeliveryId && d.DeliveryStatus == "Delivered")).GroupBy(x => x.OrderItemId).Select(g => new { g.Key, Quantity = g.Sum(x => x.ShippedQuantity) }).ToDictionaryAsync(x => x.Key, x => x.Quantity, ct);
     static string Fingerprint(Guid? customerId, CheckoutRequest r) { var canonical = new { customerId, r.ShippingAddress, r.ReceiverName, r.ReceiverPhone, r.ReceiverEmail, r.Note, r.VoucherCode, Items = (r.Items ?? []).Select(x => new { x.ProductId, x.Quantity, x.CustomNote, x.ReferenceImageUrl }).ToList() }; return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(canonical)))); }

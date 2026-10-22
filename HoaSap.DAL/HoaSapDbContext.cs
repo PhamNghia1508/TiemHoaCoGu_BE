@@ -2,6 +2,10 @@ using HoaSap.Domain;
 using HoaSap.Domain.Entities;
 using HoaSap.DAL.Auditing;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Query;
+using Microsoft.EntityFrameworkCore.Storage;
+using System.Data;
+using System.Linq.Expressions;
 
 namespace HoaSap.DAL;
 
@@ -9,6 +13,7 @@ public class HoaSapDbContext : DbContext
 {
     public HoaSapDbContext(DbContextOptions<HoaSapDbContext> options, IAuditActor? auditActor = null) : base(options) => AuditActor = auditActor;
     private IAuditActor? AuditActor { get; }
+    private readonly Dictionary<AuditLog, Guid> _bulkAuditTransactions = new();
     public DbSet<Customer> Customers => Set<Customer>();
     public DbSet<Address> Addresses => Set<Address>();
     public DbSet<Category> Categories => Set<Category>();
@@ -30,6 +35,59 @@ public class HoaSapDbContext : DbContext
     public DbSet<Refund> Refunds => Set<Refund>();
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
 
+    /// <summary>
+    /// Executes a conditional bulk update and stages one audit row per affected
+    /// entity. The caller owns the transaction; therefore snapshots, mutation,
+    /// audit insert and business SaveChanges commit or roll back together.
+    /// </summary>
+    public async Task<int> ExecuteUpdateAuditedAsync<TEntity>(
+        IQueryable<TEntity> query,
+        Expression<Func<SetPropertyCalls<TEntity>, SetPropertyCalls<TEntity>>> setters,
+        CancellationToken cancellationToken = default)
+        where TEntity : class
+    {
+        var transaction = Database.CurrentTransaction
+            ?? throw new InvalidOperationException("Audited bulk updates require an active transaction.");
+        if (transaction.GetDbTransaction().IsolationLevel != IsolationLevel.Serializable)
+            throw new InvalidOperationException("Audited bulk updates require a Serializable transaction.");
+
+        AuditRecorder.EnsureConfigured<TEntity>();
+        DiscardOrphanedBulkAuditLogs();
+        var before = await query.AsNoTracking().ToListAsync(cancellationToken);
+        if (before.Count == 0) return 0;
+
+        var idProperty = typeof(TEntity).GetProperty("Id")
+            ?? throw new InvalidOperationException($"{typeof(TEntity).Name} must expose a Guid Id.");
+        var ids = before.Select(x => (Guid)(idProperty.GetValue(x)
+            ?? throw new InvalidOperationException($"{typeof(TEntity).Name} Id cannot be null."))).ToArray();
+        foreach (var entry in ChangeTracker.Entries<TEntity>().Where(e => ids.Contains((Guid)idProperty.GetValue(e.Entity)!)).ToList())
+        {
+            if (entry.State != EntityState.Unchanged)
+                throw new InvalidOperationException($"Cannot bulk-update tracked {typeof(TEntity).Name} with pending changes.");
+            entry.State = EntityState.Detached;
+        }
+
+        var affected = await query.ExecuteUpdateAsync(setters, cancellationToken);
+        if (affected != before.Count)
+            throw new DbUpdateConcurrencyException("Bulk update affected a different number of rows than its snapshot.");
+
+        var after = await Set<TEntity>().AsNoTracking()
+            .Where(x => ids.Contains(EF.Property<Guid>(x, "Id")))
+            .ToListAsync(cancellationToken);
+        if (after.Count != before.Count)
+            throw new DbUpdateConcurrencyException("Bulk update snapshot could not be completed.");
+
+        var afterById = after.ToDictionary(x => (Guid)idProperty.GetValue(x)!);
+        foreach (var oldValue in before)
+        {
+            var id = (Guid)idProperty.GetValue(oldValue)!;
+            var log = AuditRecorder.FromSnapshots(oldValue, afterById[id], AuditActor);
+            AuditLogs.Add(log);
+            _bulkAuditTransactions.Add(log, transaction.TransactionId);
+        }
+        return affected;
+    }
+
     private void UpdateConcurrencyTokens()
     {
         foreach (var entry in ChangeTracker.Entries().Where(e => e.State == EntityState.Modified))
@@ -41,20 +99,45 @@ public class HoaSapDbContext : DbContext
 
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
+        DiscardOrphanedBulkAuditLogs();
         UpdateConcurrencyTokens();
         var logs = AuditRecorder.Capture(ChangeTracker, AuditActor);
         AuditLogs.AddRange(logs);
         try { return base.SaveChanges(acceptAllChangesOnSuccess); }
-        catch { foreach (var log in logs) Entry(log).State = EntityState.Detached; throw; }
+        catch { DetachCapturedAuditLogs(logs); throw; }
     }
 
     public override async Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
     {
+        DiscardOrphanedBulkAuditLogs();
         UpdateConcurrencyTokens();
         var logs = AuditRecorder.Capture(ChangeTracker, AuditActor);
         await AuditLogs.AddRangeAsync(logs, cancellationToken);
         try { return await base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken); }
-        catch { foreach (var log in logs) Entry(log).State = EntityState.Detached; throw; }
+        catch { DetachCapturedAuditLogs(logs); throw; }
+    }
+
+    // A failed SaveChanges rolls back its savepoint, not earlier ExecuteUpdate
+    // statements. Keep bulk logs available for a retry in that same transaction,
+    // but never carry unsaved bulk logs into a later transaction after rollback.
+    private void DiscardOrphanedBulkAuditLogs()
+    {
+        var transactionId = Database.CurrentTransaction?.TransactionId;
+        foreach (var (log, ownerId) in _bulkAuditTransactions.ToArray())
+        {
+            var entry = Entry(log);
+            if (entry.State == EntityState.Added && ownerId != transactionId)
+                entry.State = EntityState.Detached;
+            if (entry.State != EntityState.Added)
+                _bulkAuditTransactions.Remove(log);
+        }
+    }
+
+    private void DetachCapturedAuditLogs(IEnumerable<AuditLog> logs)
+    {
+        foreach (var log in logs)
+            if (Entry(log).State == EntityState.Added)
+                Entry(log).State = EntityState.Detached;
     }
 
     protected override void OnModelCreating(ModelBuilder b)
