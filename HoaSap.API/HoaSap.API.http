@@ -1,6 +1,52 @@
-@HoaSap.API_HostAddress = http://localhost:5012
+@host = http://localhost:5080
+@token = REPLACE_WITH_ACCESS_TOKEN
+@productId = REPLACE_WITH_PRODUCT_GUID
 
-GET {{HoaSap.API_HostAddress}}/weatherforecast/
-Accept: application/json
+### Liveness
+GET {{host}}/health
 
-###
+### Catalog
+GET {{host}}/api/catalog/products?page=1&pageSize=20
+
+### Danh mục
+GET {{host}}/api/catalog/categories
+
+### Đăng ký tài khoản khách (thay email/phone nếu đã tồn tại)
+POST {{host}}/api/auth/register
+Content-Type: application/json
+
+{
+  "fullName": "Khách thử nghiệm",
+  "email": "customer@example.test",
+  "phoneNumber": "0901234567",
+  "password": "Replace-This-Test-Password!"
+}
+
+### Đăng nhập
+POST {{host}}/api/auth/login
+Content-Type: application/json
+
+{
+  "email": "customer@example.test",
+  "password": "Replace-This-Test-Password!"
+}
+
+### Người dùng hiện tại
+GET {{host}}/api/auth/me
+Authorization: Bearer {{token}}
+
+### Checkout khách vãng lai — lấy productId từ catalog
+POST {{host}}/api/orders/checkout
+Content-Type: application/json
+
+{
+  "receiverName": "Khách thử nghiệm",
+  "receiverPhone": "0901234567",
+  "shippingAddress": "Địa chỉ nhận hàng thử nghiệm",
+  "items": [{ "productId": "{{productId}}", "quantity": 1 }]
+}
+
+### Workshop
+GET {{host}}/api/workshops
+
+### Không có request thanh toán tự chạy: nhân viên phải kiểm tra tiền thực tế trước.
