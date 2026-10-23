@@ -40,6 +40,7 @@ public sealed class ManagementController(HoaSapDbContext db) : ControllerBase
             Section = request.Section?.Trim() ?? "",
             IsCustomizable = request.IsCustomizable,
             IsPreOrder = request.IsPreOrder,
+            ShippingWeightGrams = request.ShippingWeightGrams ?? 500,
             IsActive = request.IsActive,
             CreatedAt = DateTime.UtcNow
         };
@@ -127,6 +128,7 @@ public sealed class AdminProductRequest
     [StringLength(100)] public string? Badge { get; set; }
     [StringLength(100)] public string? Section { get; set; }
     public bool IsCustomizable { get; set; }
+    [Range(1, 1000000)] public int? ShippingWeightGrams { get; set; }
     public bool IsPreOrder { get; set; }
     public bool IsActive { get; set; } = true;
 }

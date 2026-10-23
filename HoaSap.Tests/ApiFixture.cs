@@ -29,6 +29,7 @@ public sealed class ApiFixture : WebApplicationFactory<Program>
             ["Media:StoragePath"] = _dbPath + "-media",
             ["Database:Initialize"] = "true",
             ["Database:Seed"] = "false",
+            ["RateLimiting:PermitLimit"] = "100000",
             ["RateLimiting:AuthPermitLimit"] = _authPermitLimit.ToString(System.Globalization.CultureInfo.InvariantCulture),
             ["Jwt:Key"] = TestJwtKey,
             ["Jwt:Issuer"] = "qa-tests",

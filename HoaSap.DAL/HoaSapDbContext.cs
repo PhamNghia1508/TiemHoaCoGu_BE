@@ -1,6 +1,7 @@
 using HoaSap.Domain;
 using HoaSap.Domain.Entities;
 using HoaSap.DAL.Auditing;
+using HoaSap.DAL.Notifications;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Query;
 using Microsoft.EntityFrameworkCore.Storage;
@@ -23,6 +24,7 @@ public class HoaSapDbContext : DbContext
     public DbSet<ShoppingCartItem> ShoppingCartItems => Set<ShoppingCartItem>();
     public DbSet<Voucher> Vouchers => Set<Voucher>();
     public DbSet<Order> Orders => Set<Order>();
+    public DbSet<ShippingQuote> ShippingQuotes => Set<ShippingQuote>();
     public DbSet<OrderItem> OrderItems => Set<OrderItem>();
     public DbSet<Delivery> Deliveries => Set<Delivery>();
     public DbSet<DeliveryItem> DeliveryItems => Set<DeliveryItem>();
@@ -33,6 +35,7 @@ public class HoaSapDbContext : DbContext
     public DbSet<WorkshopBooking> WorkshopBookings => Set<WorkshopBooking>();
     public DbSet<Payment> Payments => Set<Payment>();
     public DbSet<Refund> Refunds => Set<Refund>();
+    public DbSet<GatewayPaymentIntent> GatewayPaymentIntents => Set<GatewayPaymentIntent>();
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
 
     /// <summary>
@@ -99,6 +102,7 @@ public class HoaSapDbContext : DbContext
 
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
+        NotificationOutboxStaging.Stage(ChangeTracker);
         DiscardOrphanedBulkAuditLogs();
         UpdateConcurrencyTokens();
         var logs = AuditRecorder.Capture(ChangeTracker, AuditActor);
@@ -109,6 +113,7 @@ public class HoaSapDbContext : DbContext
 
     public override async Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
     {
+        NotificationOutboxStaging.Stage(ChangeTracker);
         DiscardOrphanedBulkAuditLogs();
         UpdateConcurrencyTokens();
         var logs = AuditRecorder.Capture(ChangeTracker, AuditActor);
@@ -143,7 +148,8 @@ public class HoaSapDbContext : DbContext
     protected override void OnModelCreating(ModelBuilder b)
     {
         base.OnModelCreating(b);
-        foreach (var t in new[] { typeof(Customer), typeof(Address), typeof(Category), typeof(Product), typeof(ProductImage), typeof(Inventory), typeof(ShoppingCartItem), typeof(Voucher), typeof(Order), typeof(OrderItem), typeof(Delivery), typeof(DeliveryItem), typeof(Instructor), typeof(Workshop), typeof(WorkshopImage), typeof(WorkshopSession), typeof(WorkshopBooking), typeof(Payment), typeof(Refund), typeof(AuditLog) })
+        b.ApplyConfigurationsFromAssembly(typeof(HoaSapDbContext).Assembly);
+        foreach (var t in new[] { typeof(Customer), typeof(Address), typeof(Category), typeof(Product), typeof(ProductImage), typeof(Inventory), typeof(ShoppingCartItem), typeof(Voucher), typeof(Order), typeof(OrderItem), typeof(Delivery), typeof(DeliveryItem), typeof(Instructor), typeof(Workshop), typeof(WorkshopImage), typeof(WorkshopSession), typeof(WorkshopBooking), typeof(Payment), typeof(Refund), typeof(GatewayPaymentIntent), typeof(AuditLog) })
             b.Entity(t).Property<Guid>("Id").ValueGeneratedNever();
 
         b.Entity<AuditLog>().HasIndex(x => new { x.EntityType, x.EntityId });
@@ -167,6 +173,7 @@ public class HoaSapDbContext : DbContext
         b.Entity<Workshop>().HasIndex(x => x.Code).IsUnique();
         b.Entity<WorkshopBooking>().HasIndex(x => x.BookingCode).IsUnique();
         b.Entity<Payment>().HasIndex(x => x.TransactionCode).IsUnique();
+        b.Entity<GatewayPaymentIntent>().Property<Guid>("Id").ValueGeneratedNever();
         b.Entity<ProductImage>().HasIndex(x => new { x.ProductId, x.DisplayOrder });
         b.Entity<WorkshopImage>().HasIndex(x => new { x.WorkshopId, x.DisplayOrder });
         b.Entity<ShoppingCartItem>().HasIndex(x => new { x.CustomerId, x.ProductId }).IsUnique();

@@ -1,0 +1,12 @@
+{
+  "sqlite_integrity": "ok",
+  "preserved_tables": [
+    "Customers",
+    "Orders",
+    "Payments",
+    "Inventories",
+    "Vouchers"
+  ],
+  "media_sha256_match": true,
+  "synthetic_data_only": true
+}

@@ -1,0 +1,37 @@
+{
+  "environment": "local/staging finite smoke; not a production capacity certification",
+  "urls": [
+    "http://127.0.0.1:5081",
+    "http://127.0.0.1:5082"
+  ],
+  "requests": 1200,
+  "concurrency": 20,
+  "status_counts": {
+    "200": 1200
+  },
+  "duration_seconds": 1.732,
+  "requests_per_second": 692.82,
+  "latency_ms": {
+    "median": 34.09,
+    "p95": 47.91,
+    "p99": 63.66
+  },
+  "errors": 0,
+  "checks": {
+    "cross_instance_auth_cart": true,
+    "cross_instance_checkout_replay": true,
+    "cross_instance_cancel_replay_restores_stock_once": true,
+    "shared_limit_5_across_two_processes": true
+  },
+  "shared_limit_statuses": [
+    200,
+    200,
+    200,
+    200,
+    200,
+    429,
+    429,
+    429
+  ],
+  "passed": true
+}

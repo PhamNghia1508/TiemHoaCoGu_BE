@@ -67,7 +67,7 @@ public sealed class CmsCatalogController(HoaSapDbContext db) : ControllerBase
         if (query.IsActive is { } active) items = items.Where(x => x.IsActive == active);
         var total = await items.CountAsync(ct);
         var result = await items.OrderByDescending(x => x.CreatedAt).Skip((page - 1) * pageSize).Take(pageSize)
-            .Select(x => new { x.Id, x.CategoryId, x.Code, x.Name, x.Price, x.OriginalPrice, x.ThumbnailUrl, x.Description, x.Badge, x.Section, x.IsCustomizable, x.IsPreOrder, x.IsActive, x.CreatedAt, quantityAvailable = x.Inventory == null ? 0 : x.Inventory.QuantityAvailable, quantityReserved = x.Inventory == null ? 0 : x.Inventory.QuantityReserved })
+            .Select(x => new { x.Id, x.CategoryId, x.Code, x.Name, x.Price, x.OriginalPrice, x.ThumbnailUrl, x.Description, x.Badge, x.Section, x.IsCustomizable, x.IsPreOrder, x.ShippingWeightGrams, x.IsActive, x.CreatedAt, quantityAvailable = x.Inventory == null ? 0 : x.Inventory.QuantityAvailable, quantityReserved = x.Inventory == null ? 0 : x.Inventory.QuantityReserved })
             .ToListAsync(ct);
         return Ok(new { items = result, total, page, pageSize });
     }
@@ -76,7 +76,7 @@ public sealed class CmsCatalogController(HoaSapDbContext db) : ControllerBase
     public async Task<IActionResult> Product(Guid id, CancellationToken ct)
     {
         var product = await db.Products.AsNoTracking().Include(x => x.Images).Include(x => x.Inventory).SingleOrDefaultAsync(x => x.Id == id, ct) ?? throw new BusinessException(404, "Product not found");
-        return Ok(new { product.Id, product.CategoryId, product.Code, product.Name, product.Price, product.OriginalPrice, product.ThumbnailUrl, product.Description, product.Badge, product.Section, product.IsCustomizable, product.IsPreOrder, product.IsActive, product.CreatedAt, quantityAvailable = product.Inventory?.QuantityAvailable ?? 0, quantityReserved = product.Inventory?.QuantityReserved ?? 0, images = product.Images.OrderBy(x => x.DisplayOrder).Select(x => new { x.Id, x.ImageUrl, x.DisplayOrder }) });
+        return Ok(new { product.Id, product.CategoryId, product.Code, product.Name, product.Price, product.OriginalPrice, product.ThumbnailUrl, product.Description, product.Badge, product.Section, product.IsCustomizable, product.IsPreOrder, product.ShippingWeightGrams, product.IsActive, product.CreatedAt, quantityAvailable = product.Inventory?.QuantityAvailable ?? 0, quantityReserved = product.Inventory?.QuantityReserved ?? 0, images = product.Images.OrderBy(x => x.DisplayOrder).Select(x => new { x.Id, x.ImageUrl, x.DisplayOrder }) });
     }
 
     [HttpPut("products/{id:guid}")]
@@ -84,7 +84,7 @@ public sealed class CmsCatalogController(HoaSapDbContext db) : ControllerBase
     {
         var product = await db.Products.SingleOrDefaultAsync(x => x.Id == id, ct) ?? throw new BusinessException(404, "Product not found");
         await ValidateProduct(request, id, ct);
-        product.CategoryId = request.CategoryId; product.Code = Required(request.Code, "Product code"); product.Name = Required(request.Name, "Product name"); product.Price = request.Price; product.OriginalPrice = request.OriginalPrice; product.ThumbnailUrl = request.ThumbnailUrl?.Trim() ?? ""; product.Description = request.Description?.Trim() ?? ""; product.Badge = request.Badge?.Trim() ?? ""; product.Section = request.Section?.Trim() ?? ""; product.IsCustomizable = request.IsCustomizable; product.IsPreOrder = request.IsPreOrder; product.IsActive = request.IsActive;
+        product.CategoryId = request.CategoryId; product.Code = Required(request.Code, "Product code"); product.Name = Required(request.Name, "Product name"); product.Price = request.Price; product.OriginalPrice = request.OriginalPrice; product.ThumbnailUrl = request.ThumbnailUrl?.Trim() ?? ""; product.Description = request.Description?.Trim() ?? ""; product.Badge = request.Badge?.Trim() ?? ""; product.Section = request.Section?.Trim() ?? ""; product.IsCustomizable = request.IsCustomizable; product.IsPreOrder = request.IsPreOrder; product.ShippingWeightGrams = request.ShippingWeightGrams ?? product.ShippingWeightGrams; product.IsActive = request.IsActive;
         await db.SaveChangesAsync(ct); return Ok(product);
     }
 

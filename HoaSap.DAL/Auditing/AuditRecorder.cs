@@ -13,7 +13,7 @@ internal static class AuditRecorder
     {
         [typeof(Customer)] = ["Role", "IsActive", "IsGuest", "CreatedAt"],
         [typeof(Category)] = ["Code", "Name"],
-        [typeof(Product)] = ["CategoryId", "Code", "Name", "Price", "OriginalPrice", "Badge", "Section", "IsCustomizable", "IsPreOrder", "IsActive"],
+        [typeof(Product)] = ["CategoryId", "Code", "Name", "Price", "OriginalPrice", "Badge", "Section", "IsCustomizable", "IsPreOrder", "ShippingWeightGrams", "IsActive"],
         [typeof(ProductImage)] = ["ProductId", "DisplayOrder"],
         [typeof(Inventory)] = ["ProductId", "QuantityAvailable", "QuantityReserved", "LastUpdated"],
         [typeof(Voucher)] = ["Code", "DiscountType", "DiscountValue", "MinOrderAmount", "MaxDiscountAmount", "StartDate", "EndDate", "UsageLimit", "UsedCount", "IsActive"],
@@ -22,7 +22,14 @@ internal static class AuditRecorder
         [typeof(WorkshopSession)] = ["WorkshopId", "SessionDate", "StartTime", "EndTime", "Location", "Capacity", "BookedSlots", "SessionStatus"],
         [typeof(WorkshopBooking)] = ["SessionId", "BookingCode", "TicketCount", "TotalAmount", "DepositAmount", "RemainingAmount", "BookingStatus", "HoldExpiresAt", "CheckedInAt", "CreatedAt"],
         [typeof(Payment)] = ["OrderId", "BookingId", "TransactionCode", "PaymentType", "PaymentMethod", "Amount", "PaymentStatus", "PaidAt"],
-        [typeof(Refund)] = ["OrderId", "BookingId", "TransactionCode", "RefundAmount", "RefundStatus", "RequestedAt", "ProcessedAt"]
+        [typeof(Refund)] = ["OrderId", "BookingId", "TransactionCode", "RefundAmount", "RefundStatus", "RequestedAt", "ProcessedAt"],
+        [typeof(CustomOrderRequest)] = ["ProductId", "Quantity", "Status", "RequestedCompletionDate", "ProductionStartedAt", "CompletedAt"],
+        [typeof(CustomQuotation)] = ["CustomOrderRequestId", "CurrentRevision", "Status", "ExpiresAt"],
+        [typeof(CustomQuotationRevision)] = ["CustomQuotationId", "Version", "UnitPrice", "Quantity", "TotalAmount", "DepositAmount", "CompletionDate", "ExpiresAt", "CreatedBy", "Status"],
+        [typeof(CustomOrderCheckout)] = ["CustomQuotationId", "QuotationVersion", "OrderId"],
+        [typeof(GatewayPaymentIntent)] = ["OrderId", "Amount", "Currency", "TransactionCode", "Status", "ReconciliationStatus", "EvidenceReference"],
+        [typeof(GatewayRefundAttempt)] = ["RefundId", "PaymentId", "Amount", "Status", "ProviderTransactionCode"],
+        [typeof(ShippingQuote)] = ["Amount", "ExpiresAt", "OrderId", "UsedAt"]
     };
 
     public static List<AuditLog> Capture(ChangeTracker tracker, IAuditActor? actor)

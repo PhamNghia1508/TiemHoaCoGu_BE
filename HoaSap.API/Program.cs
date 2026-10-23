@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.DataProtection;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
@@ -6,6 +7,7 @@ using HoaSap.API.Middleware;
 using HoaSap.API.Security;
 using HoaSap.API.Services;
 using HoaSap.BLL.Commerce;
+using HoaSap.BLL.CustomOrders;
 using HoaSap.BLL.Workshops;
 using HoaSap.DAL;
 using HoaSap.DAL.Auditing;
@@ -34,6 +36,13 @@ if (string.IsNullOrWhiteSpace(key))
 }
 if (Encoding.UTF8.GetByteCount(key) < 32) throw new InvalidOperationException("Jwt key must be at least 32 bytes.");
 builder.Services.AddHttpContextAccessor();
+var dataProtection = builder.Services.AddDataProtection().SetApplicationName("HoaSap");
+var protectionPath = builder.Configuration["DataProtection:KeyPath"];
+if (!string.IsNullOrWhiteSpace(protectionPath)) dataProtection.PersistKeysToFileSystem(new DirectoryInfo(Path.GetFullPath(protectionPath)));
+builder.Services.Configure<NotificationOptions>(builder.Configuration.GetSection("Notifications"));
+builder.Services.AddHttpClient("notifications");
+builder.Services.AddSingleton<INotificationTransport, SmtpNotificationTransport>();
+builder.Services.AddSingleton<INotificationTransport, HttpsSmsNotificationTransport>();
 builder.Services.AddScoped<IAuditActor, HttpAuditActor>();
 builder.Services.AddDbContext<HoaSapDbContext>(options =>
 {
@@ -46,12 +55,20 @@ builder.Services.AddDbContext<HoaSapDbContext>(options =>
 builder.Services.AddScoped<CommerceService>();
 builder.Services.AddScoped<WorkshopService>();
 builder.Services.AddScoped<RefundService>();
+builder.Services.AddScoped<CustomOrderService>();
+builder.Services.AddScoped<ShippingQuoteService>();
+builder.Services.AddScoped<GatewayReconciliationService>();
+builder.Services.AddCommerceAdapters(
+    o => builder.Configuration.GetSection("Payments:Gateway").Bind(o),
+    o => builder.Configuration.GetSection("Shipping:Carrier").Bind(o));
 builder.Services.AddHostedService<BookingExpiryWorker>();
+builder.Services.AddHostedService<NotificationWorker>();
+builder.Services.AddHostedService<OrderExpiryWorker>();
 builder.Services.AddControllers().AddJsonOptions(o => o.JsonSerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter()));
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(o =>
 {
-    o.SwaggerDoc("v1", new OpenApiInfo { Title = "Tiệm Hoa Có Gu API", Version = "v1", Description = "E-commerce và workshop. Thanh toán hiện chỉ ghi nhận thủ công bởi nhân viên; chưa kết nối cổng thanh toán." });
+    o.SwaggerDoc("v1", new OpenApiInfo { Title = "Tiệm Hoa Có Gu API", Version = "v1", Description = "E-commerce, hoa đặt riêng và workshop. Adapter thanh toán/vận chuyển yêu cầu cấu hình nhà cung cấp; ghi nhận thủ công vẫn khả dụng." });
     o.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme { Name = "Authorization", Type = SecuritySchemeType.Http, Scheme = "bearer", BearerFormat = "JWT", In = ParameterLocation.Header });
     o.AddSecurityRequirement(new OpenApiSecurityRequirement { [new OpenApiSecurityScheme { Reference = new OpenApiReference { Type = ReferenceType.SecurityScheme, Id = "Bearer" } }] = Array.Empty<string>() });
 });
@@ -88,6 +105,8 @@ var origins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string
 builder.Services.AddCors(o => o.AddDefaultPolicy(p => { if (origins.Length > 0) p.WithOrigins(origins).AllowAnyHeader().AllowAnyMethod().WithExposedHeaders("X-Request-ID", "Retry-After"); }));
 builder.Services.AddRateLimiter(o =>
 {
+    var globalPermitLimit = builder.Configuration.GetValue("RateLimiting:PermitLimit", 300);
+    if (globalPermitLimit is < 1 or > 1000000) throw new InvalidOperationException("RateLimiting:PermitLimit must be between 1 and 1000000.");
     var authPermitLimit = builder.Configuration.GetValue("RateLimiting:AuthPermitLimit", 15);
     if (authPermitLimit is < 1 or > 10000) throw new InvalidOperationException("RateLimiting:AuthPermitLimit must be between 1 and 10000.");
     o.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
@@ -105,7 +124,7 @@ builder.Services.AddRateLimiter(o =>
         }, options: null, contentType: "application/problem+json", cancellationToken: ct);
     };
     o.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(ctx => RateLimitPartition.GetFixedWindowLimiter(
-        ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown", _ => new FixedWindowRateLimiterOptions { PermitLimit = 300, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
+        ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown", _ => new FixedWindowRateLimiterOptions { PermitLimit = globalPermitLimit, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
     o.AddPolicy("auth", ctx => RateLimitPartition.GetFixedWindowLimiter(ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
         _ => new FixedWindowRateLimiterOptions { PermitLimit = authPermitLimit, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
 });
@@ -116,7 +135,7 @@ if (isDev) { app.UseSwagger(); app.UseSwaggerUI(); }
 else { app.UseHsts(); app.UseHttpsRedirection(); }
 app.Use(async (context, next) =>
 {
-    if (context.Request.Path.StartsWithSegments("/admin"))
+    if (context.Request.Path.StartsWithSegments("/admin") || context.Request.Path.StartsWithSegments("/shop"))
     {
         context.Response.Headers.ContentSecurityPolicy = "default-src 'self'; img-src 'self' http: https: data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; object-src 'none'";
         context.Response.Headers.XContentTypeOptions = "nosniff";
@@ -126,9 +145,13 @@ app.Use(async (context, next) =>
 app.UseStaticFiles();
 app.UseCors();
 app.UseRateLimiter();
+if (builder.Configuration.GetValue("RateLimiting:Distributed", !isDev))
+    app.UseMiddleware<DistributedRateLimitMiddleware>();
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
+app.MapGet("/", () => Results.Redirect("/shop/index.html"));
+app.MapGet("/shop", () => Results.Redirect("/shop/index.html"));
 app.MapGet("/admin", () => Results.Redirect("/admin/index.html"));
 app.MapGet("/health", () => Results.Ok(new { status = "ok" })).AllowAnonymous();
 app.MapGet("/health/ready", async (HoaSapDbContext db, CancellationToken ct) =>
@@ -141,6 +164,15 @@ app.MapGet("/health/ready", async (HoaSapDbContext db, CancellationToken ct) =>
         await db.AuditLogs.AsNoTracking().Select(x => new { x.EntityType, x.OccurredAtUtc }).Take(1).ToListAsync(ct);
         await db.Customers.AsNoTracking().Select(x => x.IsActive).Take(1).ToListAsync(ct);
         await db.Categories.AsNoTracking().Select(x => x.ImageUrl).Take(1).ToListAsync(ct);
+        await db.Products.AsNoTracking().Select(x => x.ShippingWeightGrams).Take(1).ToListAsync(ct);
+        await db.GatewayPaymentIntents.AsNoTracking().Select(x => x.ClientKey).Take(1).ToListAsync(ct);
+        await db.Set<HoaSap.Domain.GatewayRefundAttempt>().AsNoTracking().Select(x => x.Id).Take(1).ToListAsync(ct);
+        await db.Set<HoaSap.Domain.RefreshToken>().AsNoTracking().Select(x => x.TokenHash).Take(1).ToListAsync(ct);
+        await db.Set<HoaSap.Domain.PasswordResetToken>().AsNoTracking().Select(x => x.Id).Take(1).ToListAsync(ct);
+        await db.Set<HoaSap.Domain.NotificationOutbox>().AsNoTracking().Select(x => x.Id).Take(1).ToListAsync(ct);
+        await db.Set<HoaSap.Domain.RateLimitCounter>().AsNoTracking().Select(x => x.Id).Take(1).ToListAsync(ct);
+        await db.Set<CustomQuotationRevision>().AsNoTracking().Select(x => x.Id).Take(1).ToListAsync(ct);
+        await db.ShippingQuotes.AsNoTracking().Select(x => x.CartFingerprint).Take(1).ToListAsync(ct);
         return Results.Ok(new { status = "ready" });
     }
     catch (Exception) when (!ct.IsCancellationRequested)

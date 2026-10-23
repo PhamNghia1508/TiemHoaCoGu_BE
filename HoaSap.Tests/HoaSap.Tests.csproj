@@ -11,6 +11,7 @@
     <PackageReference Include="xunit" Version="2.9.2" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2"><PrivateAssets>all</PrivateAssets></PackageReference>
   </ItemGroup>
+  <ItemGroup><EmbeddedResource Include="Fixtures/legacy-13d90e6.sql" /></ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../HoaSap.API/HoaSap.API.csproj" />
     <ProjectReference Include="../HoaSap.DAL/HoaSap.DAL.csproj" />

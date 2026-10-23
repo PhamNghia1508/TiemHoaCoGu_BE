@@ -52,3 +52,8 @@ $RECYCLE.BIN/
 TestResults/
 artifacts/
 **/App_Data/media/
+
+# Local load-test caches and protected key rings
+__pycache__/
+*.py[cod]
+**/App_Data/keys/

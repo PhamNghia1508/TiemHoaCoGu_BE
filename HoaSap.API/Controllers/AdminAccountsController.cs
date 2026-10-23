@@ -55,6 +55,7 @@ public sealed class AdminAccountsController(HoaSapDbContext db) : ControllerBase
         if (await db.Customers.AnyAsync(x => x.Id != id && (x.Email == email || x.PhoneNumber == phone), ct)) throw new BusinessException(409, "Email hoặc số điện thoại đã được sử dụng.");
         if (account.Role == "Admin" && account.IsActive && (request.Role != "Admin" || !request.IsActive) && await db.Customers.CountAsync(x => x.Role == "Admin" && x.IsActive, ct) <= 1)
             throw new BusinessException(409, "Không thể vô hiệu hóa hoặc hạ quyền Admin cuối cùng.");
+        if (account.Role != request.Role || account.IsActive != request.IsActive || account.Email != email || account.PhoneNumber != phone) await RevokeSessionsAsync(id, ct);
         account.FullName = request.FullName.Trim(); account.Email = email; account.PhoneNumber = phone; account.Role = request.Role; account.IsActive = request.IsActive;
         await db.SaveChangesAsync(ct); await tx.CommitAsync(ct); return Ok(ToDto(account));
     }
@@ -63,11 +64,20 @@ public sealed class AdminAccountsController(HoaSapDbContext db) : ControllerBase
     public async Task<IActionResult> ResetPassword(Guid id, ResetPasswordRequest request, CancellationToken ct)
     {
         ValidatePassword(request.NewPassword);
+        await using var tx = await db.Database.BeginTransactionAsync(System.Data.IsolationLevel.Serializable, ct);
         var account = await db.Customers.SingleOrDefaultAsync(x => x.Id == id, ct) ?? throw new BusinessException(404, "Account not found");
         if (account.IsGuest) throw new BusinessException(400, "Guest account cannot be managed.");
         account.PasswordHash = PasswordService.Hash(request.NewPassword);
+        await RevokeSessionsAsync(id, ct);
         db.AuditLogs.Add(new AuditLog { EntityType = nameof(Customer), EntityId = id.ToString(), Action = "PasswordReset", OldValuesJson = "{}", NewValuesJson = "{\"passwordReset\":true}", OccurredAtUtc = DateTime.UtcNow, ActorId = CurrentActorId(), ActorRole = User.FindFirstValue(ClaimTypes.Role), TraceId = HttpContext.TraceIdentifier });
-        await db.SaveChangesAsync(ct); return NoContent();
+        await db.SaveChangesAsync(ct); await tx.CommitAsync(ct); return NoContent();
+    }
+
+    private async Task RevokeSessionsAsync(Guid customerId, CancellationToken ct)
+    {
+        var now = DateTime.UtcNow;
+        await db.Set<RefreshToken>().Where(x => x.CustomerId == customerId && x.RevokedAtUtc == null).ExecuteUpdateAsync(s => s.SetProperty(x => x.RevokedAtUtc, now).SetProperty(x => x.RevocationReason, "admin-account-change"), ct);
+        await db.Set<PasswordResetToken>().Where(x => x.CustomerId == customerId && x.UsedAtUtc == null).ExecuteUpdateAsync(s => s.SetProperty(x => x.UsedAtUtc, now), ct);
     }
 
     [HttpGet("permissions")]

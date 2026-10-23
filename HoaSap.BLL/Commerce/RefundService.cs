@@ -24,10 +24,20 @@ public sealed class RefundProcessDto
 {
     public string TransactionCode { get; set; } = "";
 }
+public sealed class RefundProcessGatewayDto
+{
+    public string OriginalTransactionCode { get; set; } = "";
+}
 
 /// <summary>Manual, ledger-only refunds. This service never calls a payment provider.</summary>
 public sealed class RefundService(HoaSapDbContext db)
 {
+    public async Task<RefundDto> GetForGatewayAsync(Guid id, CancellationToken ct = default)
+    {
+        var refund = await db.Refunds.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id, ct)
+            ?? throw new BusinessException(404, "Không tìm thấy yêu cầu hoàn tiền.");
+        return ToDto(refund);
+    }
     public async Task<RefundPage> ListAsync(int page = 1, int pageSize = 20, CancellationToken ct = default)
     {
         page = Math.Max(1, page); pageSize = Math.Clamp(pageSize, 1, 100);
@@ -44,7 +54,7 @@ public sealed class RefundService(HoaSapDbContext db)
         await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct);
         var order = await db.Orders.Include(x => x.Items).SingleOrDefaultAsync(x => x.Id == orderId, ct)
             ?? throw new BusinessException(404, "Không tìm thấy order.");
-        if (order.OrderStatus is not ("Cancelled" or "Confirmed" or "Processing"))
+        if (order.OrderStatus is not ("Cancelled" or "Expired" or "Confirmed" or "Processing"))
             throw new BusinessException(409, "Order đã giao hoặc không còn đủ điều kiện hoàn tiền.");
         if (await db.Deliveries.AnyAsync(x => x.OrderId == orderId && x.DeliveryStatus != "Cancelled", ct))
             throw new BusinessException(409, "Order đã có giao hàng đang xử lý, không thể hoàn tiền.");
@@ -57,10 +67,25 @@ public sealed class RefundService(HoaSapDbContext db)
 
         // A refund request is also the safe cancellation boundary for an unpaid shipment workflow.
         // Reservation release is performed only on the first transition to Cancelled.
-        if (order.OrderStatus != "Cancelled")
+        if (order.OrderStatus is not ("Cancelled" or "Expired"))
         {
-            await ReleaseReservedAsync(order.Items, ct);
+            if (!await db.Set<CustomOrderCheckout>().AnyAsync(x => x.OrderId == order.Id, ct))
+                await ReleaseReservedAsync(order.Items, ct);
+            if (order.VoucherId is { } voucherId)
+            {
+                if (await db.ExecuteUpdateAuditedAsync(db.Vouchers.Where(v => v.Id == voucherId && v.UsedCount > 0), x => x.SetProperty(v => v.UsedCount, v => v.UsedCount - 1), ct) != 1)
+                    throw new BusinessException(409, "Không thể hoàn lại lượt sử dụng voucher.");
+                // Preserve the original voucher reference for accounting history.
+            }
             order.OrderStatus = "Cancelled";
+            var link = await db.Set<CustomOrderCheckout>().SingleOrDefaultAsync(x => x.OrderId == order.Id, ct);
+            if (link is not null)
+            {
+                var quote = await db.Set<CustomQuotation>().SingleAsync(x => x.Id == link.CustomQuotationId, ct);
+                var custom = await db.Set<CustomOrderRequest>().SingleAsync(x => x.Id == quote.CustomOrderRequestId, ct);
+                quote.Status = custom.Status = "Cancelled";
+                quote.UpdatedAt = custom.UpdatedAt = DateTime.UtcNow;
+            }
         }
         var refund = new Refund { OrderId = orderId, RefundAmount = request.Amount, RefundReason = request.Reason.Trim(), RefundStatus = "Requested", ApprovedBy = "", RequestedAt = DateTime.UtcNow, ConcurrencyToken = Guid.NewGuid() };
         db.Refunds.Add(refund);
@@ -70,6 +95,37 @@ public sealed class RefundService(HoaSapDbContext db)
 
     public async Task<RefundDto> ApproveAsync(Guid id, string actor, CancellationToken ct = default) => await DecideAsync(id, "Approved", actor, ct);
     public async Task<RefundDto> RejectAsync(Guid id, string actor, CancellationToken ct = default) => await DecideAsync(id, "Rejected", actor, ct);
+
+    public async Task<RefundDto> ClaimForGatewayAsync(Guid id, CancellationToken ct = default)
+    {
+        await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct);
+        var refund = await db.Refunds.SingleOrDefaultAsync(x => x.Id == id, ct) ?? throw new BusinessException(404, "Không tìm thấy yêu cầu hoàn tiền.");
+        if (refund.RefundStatus == "Processed") { await tx.CommitAsync(ct); return ToDto(refund); }
+        if (refund.RefundStatus != "Approved") throw new BusinessException(409, "Refund phải được admin duyệt trước khi gửi gateway.");
+        refund.RefundStatus = "Processing"; refund.ConcurrencyToken = Guid.NewGuid();
+        await db.SaveChangesAsync(ct); await tx.CommitAsync(ct); return ToDto(refund);
+    }
+
+    public async Task<RefundDto> CompleteGatewayAsync(Guid id, string transactionCode, CancellationToken ct = default)
+    {
+        transactionCode = transactionCode?.Trim() ?? "";
+        if (transactionCode.Length is 0 or > 100) throw new BusinessException(400, "TransactionCode bắt buộc và tối đa 100 ký tự.");
+        await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct);
+        var refund = await db.Refunds.SingleOrDefaultAsync(x => x.Id == id, ct) ?? throw new BusinessException(404, "Không tìm thấy yêu cầu hoàn tiền.");
+        if (refund.RefundStatus == "Processed") { if (refund.TransactionCode == transactionCode) { await tx.CommitAsync(ct); return ToDto(refund); } throw new BusinessException(409, "Refund đã được xử lý với mã khác."); }
+        if (refund.RefundStatus != "Processing") throw new BusinessException(409, "Refund chưa được claim để hoàn tiền.");
+        if (await db.Refunds.AnyAsync(x => x.Id != id && x.TransactionCode == transactionCode, ct)) throw new BusinessException(409, "Mã giao dịch hoàn tiền đã được sử dụng.");
+        refund.TransactionCode = transactionCode; refund.RefundStatus = "Processed"; refund.ProcessedAt = DateTime.UtcNow; refund.ConcurrencyToken = Guid.NewGuid();
+        if (refund.OrderId is { } orderId)
+        {
+            var order = await db.Orders.SingleOrDefaultAsync(x => x.Id == orderId, ct) ?? throw new BusinessException(404, "Không tìm thấy order.");
+            var paid = await PaidOrderAsync(orderId, ct);
+            var processed = (await db.Refunds.Where(x => x.OrderId == orderId && x.RefundStatus == "Processed" && x.Id != id).Select(x => x.RefundAmount).ToListAsync(ct)).Sum() + refund.RefundAmount;
+            if (processed > paid) throw new BusinessException(409, "Tổng số tiền hoàn vượt quá số tiền đã thanh toán.");
+            order.PaymentStatus = processed >= paid ? "Refunded" : "PartiallyRefunded"; order.ConcurrencyToken = Guid.NewGuid();
+        }
+        await db.SaveChangesAsync(ct); await tx.CommitAsync(ct); return ToDto(refund);
+    }
 
     public async Task<RefundDto> ProcessAsync(Guid id, string transactionCode, CancellationToken ct = default)
     {

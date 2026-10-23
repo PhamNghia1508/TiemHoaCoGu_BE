@@ -7,7 +7,7 @@ using Microsoft.AspNetCore.Mvc;
 namespace HoaSap.API.Controllers;
 
 [ApiController, Route("api/refunds"), Authorize(Roles = "Admin,Staff")]
-public sealed class RefundsController(RefundService service) : ControllerBase
+public sealed class RefundsController(RefundService service, GatewayRefundService gateway) : ControllerBase
 {
     private string Actor => User.FindFirstValue(ClaimTypes.NameIdentifier) ?? throw new BusinessException(401, "Yêu cầu đăng nhập.");
 
@@ -23,6 +23,12 @@ public sealed class RefundsController(RefundService service) : ControllerBase
     [HttpPost("{id:guid}/reject"), Authorize(Roles = "Admin")]
     public Task<RefundDto> Reject(Guid id, CancellationToken ct) => service.RejectAsync(id, Actor, ct);
 
-    [HttpPost("{id:guid}/process")]
+    [HttpPost("{id:guid}/process"), Authorize(Roles = "Admin")]
     public Task<RefundDto> Process(Guid id, RefundProcessDto request, CancellationToken ct) => service.ProcessAsync(id, request.TransactionCode, ct);
+
+    [HttpPost("{id:guid}/reconcile-gateway"), Authorize(Roles = "Admin")]
+    public Task<RefundDto> ReconcileGateway(Guid id, RefundProcessDto request, CancellationToken ct) => gateway.ReconcileAsync(id, request.TransactionCode, ct);
+
+    [HttpPost("{id:guid}/process-gateway"), Authorize(Roles = "Admin")]
+    public Task<RefundDto> ProcessGateway(Guid id, RefundProcessGatewayDto request, CancellationToken ct) => gateway.ProcessAsync(id, request.OriginalTransactionCode, ct);
 }
