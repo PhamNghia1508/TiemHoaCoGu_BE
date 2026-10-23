@@ -129,6 +129,8 @@ builder.Services.AddRateLimiter(o =>
         _ => new FixedWindowRateLimiterOptions { PermitLimit = authPermitLimit, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
 });
 var app = builder.Build();
+var forwardedHeaders = TrustedProxyConfiguration.CreateOptions(app.Configuration);
+app.UseForwardedHeaders(forwardedHeaders);
 app.UseMiddleware<RequestDiagnosticsMiddleware>();
 app.UseMiddleware<ExceptionMiddleware>();
 if (isDev) { app.UseSwagger(); app.UseSwaggerUI(); }

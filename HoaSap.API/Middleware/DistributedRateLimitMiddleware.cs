@@ -18,7 +18,7 @@ public sealed class DistributedRateLimitMiddleware(RequestDelegate next, IConfig
         var now = DateTime.UtcNow;
         var window = TimeSpan.FromSeconds(s.WindowSeconds);
         var start = new DateTime(now.Ticks - now.Ticks % window.Ticks, DateTimeKind.Utc);
-        var ip = ResolveClientIp(context, s);
+        var ip = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
         var buckets = new List<(string Key, int Limit)> { (Hash($"api|{ip}|{context.Request.Method}|{RouteBucket(context.Request.Path)}"), s.PermitLimit) };
         if (context.Request.Path.StartsWithSegments("/api/auth")) buckets.Add((Hash($"auth|{ip}"), s.AuthPermitLimit));
         try
@@ -85,7 +85,6 @@ public sealed class DistributedRateLimitMiddleware(RequestDelegate next, IConfig
     private static bool Valid(RateLimitSettings s) => s.PermitLimit is >= 1 and <= 1_000_000 && s.AuthPermitLimit is >= 1 and <= 1_000_000 && s.WindowSeconds is >= 1 and <= 86_400 && s.AuthWindowSeconds == s.WindowSeconds && s.MaxBuckets is >= 100 and <= 10_000_000;
     private static bool IsDatabaseFailure(Exception e) => e is DbUpdateException or InvalidOperationException or Microsoft.Data.Sqlite.SqliteException or Microsoft.Data.SqlClient.SqlException;
     private static async Task Reject(HttpContext c, int retry) { if (c.Response.HasStarted) return; c.Response.StatusCode = 429; c.Response.Headers.RetryAfter = retry.ToString(); await c.Response.WriteAsJsonAsync(new { status = 429, title = "Quá nhiều yêu cầu. Vui lòng thử lại sau.", traceId = c.TraceIdentifier }); }
-    private static string ResolveClientIp(HttpContext c, RateLimitSettings s) { var remote = c.Connection.RemoteIpAddress?.ToString() ?? "unknown"; if (s.TrustForwardedHeaders && c.Connection.RemoteIpAddress is not null && s.TrustedProxies.Contains(remote, StringComparer.OrdinalIgnoreCase)) { var f = c.Request.Headers["X-Forwarded-For"].FirstOrDefault()?.Split(',')[0].Trim(); if (!string.IsNullOrWhiteSpace(f)) return f; } return remote; }
     private static string RouteBucket(PathString p) => p.Value?.Split('/', StringSplitOptions.RemoveEmptyEntries).ElementAtOrDefault(1) ?? "root";
     private static string Hash(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
 }
