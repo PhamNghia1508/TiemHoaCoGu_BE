@@ -40,6 +40,26 @@ public interface INotificationTransport
     bool Enabled { get; }
     Task SendAsync(NotificationOutbox message, CancellationToken ct);
 }
+
+/// <summary>Provider may have accepted a message although its response was lost.</summary>
+public sealed class NotificationDeliveryException(string message, bool isAmbiguous, Exception? inner = null) : Exception(message, inner)
+{
+    public bool IsAmbiguous { get; } = isAmbiguous;
+}
+
+public static class NotificationDeliveryClassifier
+{
+    public static bool IsAmbiguous(Exception exception) => exception switch
+    {
+        NotificationDeliveryException delivery => delivery.IsAmbiguous,
+        OperationCanceledException => true, // delivery timeout: provider may have accepted it
+        HttpRequestException => true, // response/connection can be lost after provider acceptance
+        SmtpFailedRecipientException => false, // SMTP explicitly rejected the recipient
+        SmtpException => true, // SMTP connection/response may have been lost after DATA
+        IOException => true,
+        _ => false
+    };
+}
 public sealed class SmtpNotificationTransport(IOptions<NotificationOptions> settings) : INotificationTransport
 {
     private readonly NotificationOptions options = settings.Value;
@@ -52,7 +72,9 @@ public sealed class SmtpNotificationTransport(IOptions<NotificationOptions> sett
         if (!string.IsNullOrWhiteSpace(options.Smtp.Username)) client.Credentials = new NetworkCredential(options.Smtp.Username, options.Smtp.Password);
         using var mail = new MailMessage(options.Smtp.From, message.Destination!, message.Subject, RenderBody(message.PayloadJson));
         mail.Headers.Add("Message-Id", $"<{message.Id:N}@hoasap.local>");
-        await client.SendMailAsync(mail, ct);
+        try { await client.SendMailAsync(mail, ct); }
+        catch (SmtpFailedRecipientException ex) { throw new NotificationDeliveryException("SMTP rejected recipient", false, ex); }
+        catch (SmtpException ex) { throw new NotificationDeliveryException("SMTP delivery outcome unknown", true, ex); }
     }
     internal static string RenderBody(string json)
     {
@@ -73,7 +95,8 @@ public sealed class HttpsSmsNotificationTransport(IHttpClientFactory clients, IO
         request.Headers.Add("Idempotency-Key", message.Id.ToString("N"));
         request.Content = JsonContent.Create(new { to = message.Destination, sender = options.Sms.Sender, text = SmtpNotificationTransport.RenderBody(message.PayloadJson) });
         using var response = await clients.CreateClient("notifications").SendAsync(request, ct);
-        response.EnsureSuccessStatusCode();
+        if (!response.IsSuccessStatusCode)
+            throw new NotificationDeliveryException($"Notification provider returned an unconfirmed delivery response ({(int)response.StatusCode})", true);
     }
 }
 
@@ -95,21 +118,36 @@ public sealed class NotificationWorker(IServiceScopeFactory scopes, IEnumerable<
         var now = DateTime.UtcNow; var lease = now.AddSeconds(Math.Clamp(options.Value.LeaseSeconds, 15, 3600));
         var enabledChannels = transports.Where(x => x.Enabled).Select(x => x.Channel).ToArray();
         if (enabledChannels.Length == 0) return;
-        var candidates = await db.Set<NotificationOutbox>().AsNoTracking().Where(x => enabledChannels.Contains(x.Channel) && (x.Status == NotificationStatus.Pending || (x.Status == NotificationStatus.Processing && x.LeasedUntilUtc < now)) && x.NextAttemptAtUtc <= now).OrderBy(x => x.CreatedAtUtc).Take(50).Select(x => x.Id).ToListAsync(ct);
+        // An expired processing lease may mean the process crashed after the provider accepted
+        // the request but before Sent was persisted. Never reclaim it for another send.
+        await db.Set<NotificationOutbox>()
+            .Where(x => enabledChannels.Contains(x.Channel) && x.Status == NotificationStatus.Processing && x.LeasedUntilUtc < now)
+            .ExecuteUpdateAsync(s => s.SetProperty(x => x.Status, NotificationStatus.Unknown)
+                .SetProperty(x => x.LastError, "processing lease expired; delivery outcome unknown; automatic retry suppressed")
+                .SetProperty(x => x.LeasedUntilUtc, (DateTime?)null)
+                .SetProperty(x => x.LeaseOwner, (string?)null), ct);
+        var candidates = await db.Set<NotificationOutbox>().AsNoTracking().Where(x => enabledChannels.Contains(x.Channel) && x.Status == NotificationStatus.Pending && x.NextAttemptAtUtc <= now).OrderBy(x => x.CreatedAtUtc).Take(50).Select(x => x.Id).ToListAsync(ct);
         foreach (var id in candidates)
         {
             var peek = await db.Set<NotificationOutbox>().AsNoTracking().SingleAsync(x => x.Id == id, ct);
             var transport = transports.FirstOrDefault(x => x.Channel == peek.Channel);
             if (transport is null || !transport.Enabled) continue; // disabled remains Pending and does not consume attempts
             now = DateTime.UtcNow; lease = now.AddSeconds(Math.Clamp(options.Value.LeaseSeconds, 60, 3600));
-            var claimed = await db.Set<NotificationOutbox>().Where(x => x.Id == id && (x.Status == NotificationStatus.Pending || (x.Status == NotificationStatus.Processing && x.LeasedUntilUtc < now)) && x.NextAttemptAtUtc <= now).ExecuteUpdateAsync(s => s.SetProperty(x => x.Status, NotificationStatus.Processing).SetProperty(x => x.LeaseOwner, owner).SetProperty(x => x.LeasedUntilUtc, lease), ct);
+            var claimed = await db.Set<NotificationOutbox>().Where(x => x.Id == id && x.Status == NotificationStatus.Pending && x.NextAttemptAtUtc <= now).ExecuteUpdateAsync(s => s.SetProperty(x => x.Status, NotificationStatus.Processing).SetProperty(x => x.LeaseOwner, owner).SetProperty(x => x.LeasedUntilUtc, lease), ct);
             if (claimed != 1) continue;
             var row = await db.Set<NotificationOutbox>().AsNoTracking().SingleAsync(x => x.Id == id, ct);
             using var deliveryTimeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
             deliveryTimeout.CancelAfter(TimeSpan.FromSeconds(Math.Min(45, Math.Clamp(options.Value.LeaseSeconds, 60, 3600) - 10)));
             try { await transport.SendAsync(row, deliveryTimeout.Token); row.Status = NotificationStatus.Sent; row.SentAtUtc = DateTime.UtcNow; row.LeasedUntilUtc = null; row.LeaseOwner = null; }
-            catch (Exception) when (!ct.IsCancellationRequested)
-            { row.Attempts++; row.LastError = "delivery failed"; row.Status = row.Attempts >= Math.Max(1, options.Value.MaxAttempts) ? NotificationStatus.Failed : NotificationStatus.Pending; row.NextAttemptAtUtc = DateTime.UtcNow.AddMinutes(Math.Min(60, Math.Pow(2, Math.Min(6, row.Attempts)))); row.LeasedUntilUtc = null; row.LeaseOwner = null; }
+            catch (Exception ex) when (!ct.IsCancellationRequested)
+            {
+                row.Attempts++;
+                var ambiguous = NotificationDeliveryClassifier.IsAmbiguous(ex);
+                row.LastError = ambiguous ? "delivery outcome unknown; automatic retry suppressed" : "delivery failed";
+                row.Status = ambiguous ? NotificationStatus.Unknown : row.Attempts >= Math.Max(1, options.Value.MaxAttempts) ? NotificationStatus.Failed : NotificationStatus.Pending;
+                row.NextAttemptAtUtc = DateTime.UtcNow.AddMinutes(Math.Min(60, Math.Pow(2, Math.Min(6, row.Attempts))));
+                row.LeasedUntilUtc = null; row.LeaseOwner = null;
+            }
             await db.Set<NotificationOutbox>().Where(x => x.Id == id && x.LeaseOwner == owner && x.Status == NotificationStatus.Processing).ExecuteUpdateAsync(s => s.SetProperty(x => x.Status, row.Status).SetProperty(x => x.SentAtUtc, row.SentAtUtc).SetProperty(x => x.Attempts, row.Attempts).SetProperty(x => x.LastError, row.LastError).SetProperty(x => x.NextAttemptAtUtc, row.NextAttemptAtUtc).SetProperty(x => x.LeasedUntilUtc, (DateTime?)null).SetProperty(x => x.LeaseOwner, (string?)null), ct);
         }
     }

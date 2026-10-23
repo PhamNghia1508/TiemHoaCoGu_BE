@@ -22,9 +22,7 @@ public sealed class ExceptionMiddleware(RequestDelegate next, ILogger<ExceptionM
             var status = ex switch
             {
                 BusinessException b => b.StatusCode,
-                DbUpdateException => 409,
-                SqliteException { SqliteErrorCode: 5 or 6 } => 409,
-                SqlException { Number: 1205 } => 409,
+                _ when IsDatabaseConflict(ex) => 409,
                 _ => 500
             };
             if (status == 500) logger.LogError(ex, "Request failed: {TraceId}", context.TraceIdentifier);
@@ -40,5 +38,15 @@ public sealed class ExceptionMiddleware(RequestDelegate next, ILogger<ExceptionM
                 Extensions = { ["traceId"] = context.TraceIdentifier }
             }, options: null, contentType: "application/problem+json", cancellationToken: context.RequestAborted);
         }
+    }
+
+    private static bool IsDatabaseConflict(Exception exception)
+    {
+        // EF's SQL Server execution strategy can wrap a deadlock in an
+        // InvalidOperationException even when automatic retries are disabled.
+        for (Exception? current = exception; current is not null; current = current.InnerException)
+            if (current is DbUpdateException or SqliteException { SqliteErrorCode: 5 or 6 } or SqlException { Number: 1205 })
+                return true;
+        return false;
     }
 }

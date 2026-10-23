@@ -26,7 +26,7 @@ public sealed class PasswordResetToken
 }
 
 public enum NotificationChannel { Email, Sms }
-public enum NotificationStatus { Pending, Processing, Sent, Failed, Disabled }
+public enum NotificationStatus { Pending, Processing, Sent, Failed, Disabled, Unknown }
 
 public sealed class NotificationOutbox
 {
