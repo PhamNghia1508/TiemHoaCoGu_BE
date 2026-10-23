@@ -1,0 +1,122 @@
+{
+  "environment": "local disposable SQL Server 2022; two independent ASP.NET Core Release processes; not staging/production certification",
+  "database": "HoaSapAcceptanceRace_df4649c15da3d580",
+  "process_ids": [
+    255060,
+    255208
+  ],
+  "trial_count": 5,
+  "passed": true,
+  "trials": [
+    {
+      "environment": "local disposable finite workshop acceptance smoke; not production",
+      "urls": [
+        "http://127.0.0.1:5181",
+        "http://127.0.0.1:5182"
+      ],
+      "workshop_id": "d9258ecb-c277-49f4-8661-2e8c7d414261",
+      "session_id": "2036d162-6a10-4e05-a7b7-13622f3fe54d",
+      "race_statuses": [
+        200,
+        409
+      ],
+      "winner_booking_id": "9d0ea417-ce4f-4196-b750-59448523997a",
+      "checks": {
+        "one_winner_one_conflict": true,
+        "winner_replay_same_id_across_peer": true,
+        "cancel_replay_successful": true,
+        "fresh_customer_gets_seat_after_cancel": true,
+        "cancel_release_once": true
+      },
+      "passed": true
+    },
+    {
+      "environment": "local disposable finite workshop acceptance smoke; not production",
+      "urls": [
+        "http://127.0.0.1:5181",
+        "http://127.0.0.1:5182"
+      ],
+      "workshop_id": "8da5aa17-344d-476d-b799-0e5a88aa2a3b",
+      "session_id": "2297039c-ffab-4c81-9779-4632db1ab44d",
+      "race_statuses": [
+        409,
+        200
+      ],
+      "winner_booking_id": "27b9167f-0d2f-46b0-8597-42b6de3caa93",
+      "checks": {
+        "one_winner_one_conflict": true,
+        "winner_replay_same_id_across_peer": true,
+        "cancel_replay_successful": true,
+        "fresh_customer_gets_seat_after_cancel": true,
+        "cancel_release_once": true
+      },
+      "passed": true
+    },
+    {
+      "environment": "local disposable finite workshop acceptance smoke; not production",
+      "urls": [
+        "http://127.0.0.1:5181",
+        "http://127.0.0.1:5182"
+      ],
+      "workshop_id": "6c8cc634-2f1a-4a64-ad35-709be1e8d2f3",
+      "session_id": "bd0cb7f3-423b-4be9-be55-44fc57617bc7",
+      "race_statuses": [
+        409,
+        200
+      ],
+      "winner_booking_id": "2c32ff47-560e-47d0-a9ca-289f7e2bea8c",
+      "checks": {
+        "one_winner_one_conflict": true,
+        "winner_replay_same_id_across_peer": true,
+        "cancel_replay_successful": true,
+        "fresh_customer_gets_seat_after_cancel": true,
+        "cancel_release_once": true
+      },
+      "passed": true
+    },
+    {
+      "environment": "local disposable finite workshop acceptance smoke; not production",
+      "urls": [
+        "http://127.0.0.1:5181",
+        "http://127.0.0.1:5182"
+      ],
+      "workshop_id": "5e6a12f3-3ada-4ac2-827a-b22f51e88883",
+      "session_id": "1584925d-770e-4ad3-ae1e-1108d48fa038",
+      "race_statuses": [
+        200,
+        409
+      ],
+      "winner_booking_id": "b21a703f-f29a-4c4f-aef3-2852bc9f5375",
+      "checks": {
+        "one_winner_one_conflict": true,
+        "winner_replay_same_id_across_peer": true,
+        "cancel_replay_successful": true,
+        "fresh_customer_gets_seat_after_cancel": true,
+        "cancel_release_once": true
+      },
+      "passed": true
+    },
+    {
+      "environment": "local disposable finite workshop acceptance smoke; not production",
+      "urls": [
+        "http://127.0.0.1:5181",
+        "http://127.0.0.1:5182"
+      ],
+      "workshop_id": "e08b2197-cb40-475c-8092-f0c453d2965b",
+      "session_id": "a2b6a1bf-77ee-4e50-98d0-561795dea516",
+      "race_statuses": [
+        409,
+        200
+      ],
+      "winner_booking_id": "a21bf9ac-71bf-490d-9d8d-2084ba4aa558",
+      "checks": {
+        "one_winner_one_conflict": true,
+        "winner_replay_same_id_across_peer": true,
+        "cancel_replay_successful": true,
+        "fresh_customer_gets_seat_after_cancel": true,
+        "cancel_release_once": true
+      },
+      "passed": true
+    }
+  ]
+}

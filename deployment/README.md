@@ -2,6 +2,21 @@
 
 Chỉ dùng các script với dữ liệu local/staging có thể xóa. Không stress test hoặc tạo đơn thử trên production.
 
+## Tranh ghế cuối qua hai process thật
+
+[results/workshop-race.json](results/workshop-race.json) ghi **5/5 vòng đạt** trên hai process ASP.NET Core Release độc lập cùng SQL Server 2022 local: mỗi vòng đúng một booking thành công (`200`) và một xung đột (`409`), replay winner qua peer trả cùng id, hủy lặp không nhả thừa ghế, khách còn lại lấy được ghế đã nhả. Bài thử ban đầu phát hiện deadlock SQL bị EF bọc thành `InvalidOperationException` gây 500; middleware đã nhận diện xung đột trong chuỗi inner exception và trả 409 có kiểm soát, không tự retry transaction hoặc gọi provider.
+
+Script `workshop-race.py` dùng Python standard library, bắt buộc `--writes`, chỉ cho đúng hai URL HTTP loopback. Dựng hai process bằng database dùng thử mới, cùng JWT/issuer/audience/key ring, tắt email/SMS, tạo bootstrap admin thử và chỉ bật initialization trên process đầu tiên. Đợi readiness rồi chạy:
+
+```bash
+# ADMIN_EMAIL và ADMIN_PASSWORD đã có trong environment của tài khoản QA.
+python3 deployment/workshop-race.py \
+  --urls http://127.0.0.1:5181,http://127.0.0.1:5182 \
+  --writes --output /tmp/workshop-race.json
+```
+
+Script tạo dữ liệu workshop/customer/booking thử, không tự xóa DB, không thu tiền và không chứng nhận capacity/staging/production. Hai URL phải thực sự trỏ hai process độc lập dùng chung DB; bản thân script không thể tự chứng minh kiến trúc đằng sau URL.
+
 ## Smoke-load đã chạy
 
 `smoke-load.py` dùng Python 3 standard library, không cần k6. Kết quả tại [results/local-smoke.json](results/local-smoke.json): hai process ASP.NET Core Release cùng SQL Server 2022, 1.200 request đọc catalog, concurrency 20, **1.200 trả 200, không lỗi**. Lần đo đạt khoảng 693 request/giây, median 34,09 ms, p95 47,91 ms, p99 63,66 ms. Đây là tải ngắn cục bộ, **không phải SLA hay chứng nhận capacity**.

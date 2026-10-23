@@ -238,7 +238,7 @@ public sealed class WorkshopService(HoaSapDbContext db)
         if (booking.BookingStatus != "cancelled") throw new BusinessException(409, "Chỉ booking đã hủy mới được hoàn tiền.");
         var duplicate = await db.Refunds.AnyAsync(x => x.BookingId == id && x.RefundStatus != "Rejected" && x.RefundAmount == r.Amount && x.RefundReason == r.Reason.Trim(), ct);
         if (duplicate) { await tx.CommitAsync(ct); return; }
-        db.Refunds.Add(new Refund { BookingId = id, RefundAmount = r.Amount, RefundReason = r.Reason.Trim(), RefundStatus = "Requested", ApprovedBy = staffId.ToString() }); await db.SaveChangesAsync(ct); await tx.CommitAsync(ct);
+        db.Refunds.Add(new Refund { BookingId = id, RefundAmount = r.Amount, RefundReason = r.Reason.Trim(), RefundStatus = "Requested", ApprovedBy = "" }); await db.SaveChangesAsync(ct); await tx.CommitAsync(ct);
     }
 
     private async Task<decimal> PaidAmountAsync(Guid bookingId, CancellationToken ct) => (await db.Payments.Where(x => x.BookingId == bookingId && x.PaymentStatus == "Paid").Select(x => x.Amount).ToListAsync(ct)).Sum();

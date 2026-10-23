@@ -1,5 +1,16 @@
 # Kết quả kiểm tra bản mở rộng
 
+## Bổ sung acceptance sau main `a260845`
+
+**Backend 192 đạt, 0 lỗi, 0 bỏ qua**, bao gồm **12 test tích hợp SQL Server thật**; frontend **6/6 đạt**. Release build thành công; lúc biên dịch test còn warning CS1998 có sẵn trong helper `ApiFixture.AuthenticatedAsync`, không có lỗi build. Cổng `scripts/verify-test-results.py` xác nhận TRX không có test bỏ qua và có đủ các suite SQL; CI gọi cổng này sau `dotnet test` để không nhận kết quả xanh giả do thiếu SQL.
+
+- Staff tạo yêu cầu hoàn workshop không còn ghi nhầm `ApprovedBy`: `Requested` để trống người duyệt, DTO trả null; audit vẫn ghi đúng Staff là người tạo. Test gọi đúng API Staff, kiểm tra Staff bị cấm approve/process/process-gateway/reconcile-gateway, rồi Admin duyệt mới ghi đúng id Admin. Không tự sửa lịch sử refund cũ.
+- Timeout/mất kết nối/kết quả gửi SMS-email không xác định hoặc lease `Processing` hết hạn chuyển `Unknown`, không tự gửi lại; lỗi chắc chắn chưa nhận vẫn retry có backoff. Message id giữ ổn định. Test không gọi nhà cung cấp thật. Thông báo chưa rõ kết quả có thể bị giữ chờ đối soát thay vì được tự giao lại; xem [runbook](operations.md).
+- Thêm SQL test tranh ghế cuối bằng context/service độc lập, replay booking và hủy lặp/audit. Thử thêm qua **hai process API Release thật**: **5/5 vòng đạt**, mỗi vòng đúng một `200` và một `409`, replay cùng id, nhả ghế đúng một lần. Lượt đầu phát hiện lỗi EF bọc SQL deadlock thành 500; middleware đã nhận diện inner exception để trả 409, không tự chạy lại transaction. [Kết quả hai process](../deployment/results/workshop-race.json).
+- Drill full backup/restore SQL Server vào DB mới đạt: schema/migrations, dữ liệu mẫu và audit giữ nguyên; media khớp SHA-256; token giải mã được bằng key ring đã phục hồi. SQL dùng đường dẫn phía server để hỗ trợ CI container. Đây **không phải** drill snapshot/volume/khóa mã hóa trên staging thật.
+
+Provider thanh toán–vận chuyển–SMTP/SMS thật và cân nặng đóng gói SKU vẫn để sau theo yêu cầu. Không tạo merchant/secrets/trọng lượng giả, không merge, không deploy và không tuyên bố sẵn sàng production. Số liệu bên dưới là kết quả lịch sử trước bổ sung này, không phải lượt acceptance mới.
+
 ## Kết quả chính
 
 **166 test đạt, 0 lỗi, 0 bỏ qua**, gồm **9 test SQL Server 2022 thật**. Build Release toàn solution đạt **0 warning, 0 error**. EF xác nhận model không còn thay đổi chưa có migration. Kiểm tra cú pháp JavaScript, Bash và `git diff --check` đều đạt.

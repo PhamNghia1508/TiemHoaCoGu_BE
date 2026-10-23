@@ -1,0 +1,40 @@
+{
+  "base_commit": "a2608455470b67fecd58722206c25e50f6881fc8",
+  "environment": "local disposable SQL Server 2022; no live provider calls; not staging or production certification",
+  "backend": {
+    "total": 192,
+    "passed": 192,
+    "failed": 0,
+    "skipped": 0
+  },
+  "sql_server_integration": {
+    "total": 12,
+    "passed": 12,
+    "tests": [
+      "HoaSap.Tests.SqlServerBulkAuditTests.ConcurrentCheckout_OneStockUnitProducesOneOrderAndOneReleaseAuditOnWinner",
+      "HoaSap.Tests.SqlServerBulkAuditTests.Cancellation_ReleasesReservationOnlyOnce_WhenRepeated",
+      "HoaSap.Tests.SqlServerBulkAuditTests.Fulfillment_ConsumesReservationOnlyOnce_WhenCompletedIsRepeated",
+      "HoaSap.Tests.SqlServerWorkshopConcurrencyTests.LastSeatRace_IndependentContextsCannotOversell_AndReplayIsIdempotent",
+      "HoaSap.Tests.DatabaseCompatibilityTests.SqlServer_MigrationRoundTrip_IsOptIn",
+      "HoaSap.Tests.SqlServerBulkAuditTests.CheckoutWithVoucher_WritesExactAtomicInventoryAndVoucherAudits_AndReplayDoesNotAddAudit",
+      "HoaSap.Tests.SqlServerBulkAuditTests.ConcurrentDifferentProducts_SharedVoucherLimitOneHasOneWinnerAndOneVoucherAudit",
+      "HoaSap.Tests.SqlServerBulkAuditTests.Refund_ReleasesReservationAndDoesNotReleaseItAgain",
+      "HoaSap.Tests.SqlServerBulkAuditTests.InvalidVoucher_AfterInventoryMutation_RollsBackStockOrdersAndAllCustomerAudits",
+      "HoaSap.Tests.SqlServerBulkAuditTests.AuditedBulkUpdate_RejectsReadCommittedBeforeMutation",
+      "HoaSap.Tests.SqlServerRecoveryTests.FullBackupRestore_ToDistinctDatabase_PreservesSchemaMigrationsAuditRowsMediaAndDataProtection",
+      "HoaSap.Tests.SqlServerWorkshopConcurrencyTests.RepeatedCancellation_ReleasesHeldSeatsOnce_AndWritesOneReleaseAudit"
+    ]
+  },
+  "frontend": {
+    "passed": 6,
+    "failed": 0
+  },
+  "two_process_workshop_trials": 5,
+  "deferred": [
+    "live payment/carrier/email/SMS provider sandbox",
+    "measured packed SKU weights",
+    "actual staging DB/media/encrypted-key snapshot restoration"
+  ],
+  "merged": false,
+  "deployed": false
+}
