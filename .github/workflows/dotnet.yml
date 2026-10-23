@@ -28,6 +28,10 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node --test scripts/storefront-safety.test.cjs
       - run: dotnet restore HoaSap.sln
       - run: dotnet build HoaSap.sln -c Release --no-restore
       - run: dotnet test HoaSap.Tests/HoaSap.Tests.csproj -c Release --no-build --logger "trx;LogFileName=ci-results.trx" --results-directory artifacts/test-results
