@@ -1,0 +1,39 @@
+name: dotnet
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: Y
+          MSSQL_SA_PASSWORD: "HoaSap_CI!Password123"
+        ports:
+          - 1433:1433
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'HoaSap_CI!Password123' -C -Q 'SELECT 1'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      HOASAP_TEST_SQLSERVER: "Server=localhost,1433;Database=master;User Id=sa;Password=HoaSap_CI!Password123;TrustServerCertificate=True"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - run: dotnet restore HoaSap.sln
+      - run: dotnet build HoaSap.sln -c Release --no-restore
+      - run: dotnet test HoaSap.Tests/HoaSap.Tests.csproj -c Release --no-build --logger "trx;LogFileName=ci-results.trx" --results-directory artifacts/test-results
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: artifacts/test-results
+          if-no-files-found: warn

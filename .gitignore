@@ -39,3 +39,21 @@ ehthumbs.db
 Desktop.ini
 $RECYCLE.BIN/
 .DS_Store
+
+# Local data and credentials
+*.db
+*.db-shm
+*.db-wal
+*.Backup.tmp
+.env
+.env.*
+!.env.example
+**/appsettings.Local.json
+TestResults/
+artifacts/
+**/App_Data/media/
+
+# Local load-test caches and protected key rings
+__pycache__/
+*.py[cod]
+**/App_Data/keys/

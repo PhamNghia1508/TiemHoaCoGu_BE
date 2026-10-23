@@ -1,1 +1,8 @@
-<Solution />
+<Solution>
+  <Project Path="HoaSap.Domain/HoaSap.Domain.csproj" />
+  <Project Path="HoaSap.DAL/HoaSap.DAL.csproj" />
+  <Project Path="HoaSap.BLL/HoaSap.BLL.csproj" />
+  <Project Path="HoaSap.API/HoaSap.API.csproj" />
+  <Project Path="HoaSap.Maintenance/HoaSap.Maintenance.csproj" />
+  <Project Path="HoaSap.Tests/HoaSap.Tests.csproj" />
+</Solution>
